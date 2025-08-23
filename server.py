@@ -63,17 +63,15 @@ sys.setrecursionlimit(10000)  # Tăng recursion limit
 # Global variables
 SERVER_MODE = None
 BACKGROUND_MODE = False
-
-# Global variables
-SERVER_MODE = None
-BACKGROUND_MODE = False
 args = None
+
+# Parse arguments first
+args = parse_arguments()
 
 # Setup logging based on background mode
 def setup_logging_with_background():
     """Setup logging based on background mode"""
-    global BACKGROUND_MODE, args
-    args = parse_arguments()
+    global BACKGROUND_MODE
     if args.background:
         BACKGROUND_MODE = True
         # Redirect all output to null in background mode
@@ -219,22 +217,21 @@ def ask_server_mode():
             # Port tùy chỉnh, hỏi mode
             pass
     
+    # Trong background mode, default to lmstudio nếu không có argument
+    if BACKGROUND_MODE:
+        SERVER_MODE = "lmstudio"
+        return 1235
+    
     # Hỏi người dùng chọn mode nếu không có argument
-    if not BACKGROUND_MODE:
-        print("\n" + "="*50)
-        print("🤖 CUSTOM SERVER - CHỌN MODE")
-        print("="*50)
-        print("1. LM Studio Mode (port 1235)")
-        print("2. Ollama Mode (port 11434)")
-        print("="*50)
+    print("\n" + "="*50)
+    print("🤖 CUSTOM SERVER - CHỌN MODE")
+    print("="*50)
+    print("1. LM Studio Mode (port 1235)")
+    print("2. Ollama Mode (port 11434)")
+    print("="*50)
     
     while True:
         try:
-            if BACKGROUND_MODE:
-                # Trong background mode, default to lmstudio
-                SERVER_MODE = "lmstudio"
-                return 1235
-            
             choice = input("Chọn mode (1 hoặc 2): ").strip()
             if choice == "1":
                 SERVER_MODE = "lmstudio"
