@@ -130,7 +130,7 @@ class QwenService:
                 "feature_config": {
                     "thinking_enabled": True,
                     "output_schema": "phase",
-                    "thinking_budget": 81920
+                    "thinking_budget": 1024
                 },
                 "extra": {
                     "meta": {
