@@ -51,6 +51,110 @@ def list_models():
     response.headers['Content-Type'] = 'application/json'
     return response
 
+@app.route('/v1/models/<model_id>', methods=['GET'])
+def get_model(model_id):
+    """Get specific model information"""
+    route_info = f"GET /v1/models/{model_id} - Get Model Info"
+    logger.info(f"ROUTE: {route_info}")
+    terminal_ui.update_route(route_info)
+    
+    try:
+        # Lấy thông tin model từ Qwen API
+        qwen_models = qwen_service.get_models_from_qwen()
+        
+        # Tìm model cụ thể
+        target_model = None
+        for model in qwen_models:
+            if model.get('id') == model_id:
+                target_model = model
+                break
+        
+        if not target_model:
+            # Nếu không tìm thấy, trả về lỗi
+            return jsonify({
+                "error": {
+                    "message": f"Model {model_id} not found",
+                    "type": "invalid_request_error",
+                    "code": "model_not_found"
+                }
+            }), 404
+        
+        # Lấy thông tin chi tiết từ info.meta
+        model_info = target_model.get('info', {})
+        meta = model_info.get('meta', {})
+        capabilities = meta.get('capabilities', {})
+        
+        # Map thông tin từ Qwen API sang LM Studio format
+        context_window = meta.get('max_context_length', 131072)
+        
+        # Xác định reservedOutputTokenSpace
+        if 'max_thinking_generation_length' in meta:
+            reserved_output_space = meta.get('max_thinking_generation_length')
+        elif 'max_summary_generation_length' in meta:
+            reserved_output_space = meta.get('max_summary_generation_length')
+        elif 'max_generation_length' in meta:
+            reserved_output_space = meta.get('max_generation_length')
+        else:
+            reserved_output_space = 8192
+        
+        # Kiểm tra có hỗ trợ thinking không
+        supports_thinking = capabilities.get('thinking', False) or capabilities.get('thinking_budget', False)
+        
+        # Map capabilities
+        lm_capabilities = {
+            "vision": capabilities.get('vision', False),
+            "function_calling": True,  # Qwen hỗ trợ function calling
+            "json_output": True,       # Qwen hỗ trợ JSON output
+            "streaming": True,         # Qwen hỗ trợ streaming
+            "document": capabilities.get('document', False),
+            "video": capabilities.get('video', False),
+            "audio": capabilities.get('audio', False),
+            "citations": capabilities.get('citations', False)
+        }
+        
+        # Tạo response cho LM Studio
+        model_config = {
+            "id": model_id,
+            "object": "model",
+            "created": int(time.time()),
+            "owned_by": "qwen",
+            "permission": [],
+            "root": model_id,
+            "parent": None,
+            "contextWindow": context_window,
+            "reservedOutputTokenSpace": reserved_output_space,
+            "supportsSystemMessage": "system-role",
+            "reasoningCapabilities": {
+                "supportsReasoning": supports_thinking,
+                "canTurnOffReasoning": supports_thinking,
+                "canIOReasoning": supports_thinking,
+                "openSourceThinkTags": [
+                    "<think>",
+                    "</think>"
+                ] if supports_thinking else []
+            },
+            "capabilities": lm_capabilities,
+            "pricing": {
+                "prompt": 0.0001,
+                "completion": 0.0002
+            }
+        }
+        
+        logger.info(f"Model config for {model_id}: contextWindow={context_window}, reservedOutputTokenSpace={reserved_output_space}, supportsThinking={supports_thinking}")
+        
+        response = jsonify(model_config)
+        response.headers['Content-Type'] = 'application/json'
+        return response
+        
+    except Exception as e:
+        logger.error(f"Error getting model info for {model_id}: {e}")
+        return jsonify({
+            "error": {
+                "message": f"Failed to get model information: {str(e)}",
+                "type": "server_error"
+            }
+        }), 500
+
 @app.route('/v1/chat/completions', methods=['POST'])
 def chat_completions():
     """Chat completions with streaming support"""
@@ -245,6 +349,7 @@ if __name__ == '__main__':
     logger.info("")
     logger.info("Supported endpoints:")
     logger.info(f"->\tGET  http://{local_ip}:1235/v1/models")
+    logger.info(f"->\tGET  http://{local_ip}:1235/v1/models/{{model_id}}")
     logger.info(f"->\tPOST http://{local_ip}:1235/v1/chat/completions")
     logger.info(f"->\tPOST http://{local_ip}:1235/v1/completions")
     logger.info(f"->\tPOST http://{local_ip}:1235/v1/embeddings")
