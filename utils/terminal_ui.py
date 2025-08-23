@@ -11,6 +11,8 @@ class TerminalUI:
         self.current_route = "No active route"
         self.current_chat_id = None
         self.current_parent_id = None
+        self.server_mode = None
+        self.server_port = None
         self.input_thread = None
         self.running = False
         self.lock = threading.Lock()
@@ -46,13 +48,25 @@ class TerminalUI:
             self.current_parent_id = parent_id
             self._print_ui()
     
+    def update_server_info(self, mode, port):
+        """Cập nhật thông tin server mode và port"""
+        with self.lock:
+            self.server_mode = mode
+            self.server_port = port
+            self._print_ui()
+    
     def _print_ui(self):
         """In UI ra terminal"""
         os.system('cls' if os.name == 'nt' else 'clear')
         
         # Header
         print("=" * 80)
-        print("🚀 LM Studio Custom Server - Qwen API Integration")
+        if self.server_mode == "lmstudio":
+            print("🚀 LM Studio Custom Server - Qwen API Integration")
+        elif self.server_mode == "ollama":
+            print("🤖 Ollama Custom Server - Qwen API Integration")
+        else:
+            print("🚀 Custom Server - Qwen API Integration")
         print("=" * 80)
         
         # Current route info
@@ -70,9 +84,14 @@ class TerminalUI:
         # Server status
         print("📊 Server Status:")
         print("   • Status: Running")
-        print("   • Port: 1235")
+        if self.server_port:
+            print(f"   • Port: {self.server_port}")
+        else:
+            print("   • Port: Not set")
         print("   • Host: 0.0.0.0")
         print("   • Logs: logs/")
+        if self.server_mode:
+            print(f"   • Mode: {self.server_mode.upper()}")
         print("-" * 80)
         
         # Available commands
@@ -84,6 +103,22 @@ class TerminalUI:
         print("   • 'debug' - Show debug info")
         print("   • 'clear' - Clear terminal")
         print("   • 'quit' - Stop server")
+        print("-" * 80)
+        
+        # Mode-specific info
+        if self.server_mode == "lmstudio":
+            print("🔧 LM Studio Mode Info:")
+            print("   • Compatible with LM Studio")
+            print("   • OpenAI API format")
+            print("   • Think mode support: <think> tags")
+            print("   • Endpoints: /v1/models, /v1/chat/completions")
+        elif self.server_mode == "ollama":
+            print("🔧 Ollama Mode Info:")
+            print("   • Compatible with Ollama clients")
+            print("   • Ollama API format")
+            print("   • Think mode support: thinking field")
+            print("   • Image support: base64 images")
+            print("   • Endpoints: /api/chat, /api/generate, /api/tags")
         print("-" * 80)
         
         # Input area
@@ -157,7 +192,23 @@ class TerminalUI:
         print(f"   • Current Route: {self.current_route}")
         print(f"   • Current Chat ID: {self.current_chat_id or 'Not initialized'}")
         print(f"   • Current Parent ID: {self.current_parent_id or 'None'}")
+        print(f"   • Server Mode: {self.server_mode or 'Not set'}")
+        print(f"   • Server Port: {self.server_port or 'Not set'}")
         print(f"   • Log File: logs/{datetime.now().strftime('%Y-%m-%d')}.log")
+        
+        # Mode-specific status
+        if self.server_mode == "lmstudio":
+            print("\n🔧 LM Studio Mode Status:")
+            print("   • Compatible with LM Studio")
+            print("   • Think mode: <think> and </think> tags")
+            print("   • Queue system: Enabled")
+        elif self.server_mode == "ollama":
+            print("\n🔧 Ollama Mode Status:")
+            print("   • Compatible with Ollama clients")
+            print("   • Think mode: thinking field in response")
+            print("   • Image support: base64 images")
+            print("   • Queue system: Enabled")
+        
         print("\nPress Enter to continue...")
         input()
         self._print_ui()
@@ -193,6 +244,8 @@ class TerminalUI:
         print(f"   • Current Chat ID: {self.current_chat_id or 'Not initialized'}")
         print(f"   • Current Parent ID: {self.current_parent_id or 'None'}")
         print(f"   • Current Route: {self.current_route}")
+        print(f"   • Server Mode: {self.server_mode or 'Not set'}")
+        print(f"   • Server Port: {self.server_port or 'Not set'}")
         print(f"   • Server Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
         # Thêm thông tin về chat manager
@@ -203,7 +256,14 @@ class TerminalUI:
         except Exception as e:
             print(f"   • Chat Manager Error: {e}")
         
-
+        # Thêm thông tin về queue manager
+        try:
+            from utils.queue_manager import queue_manager
+            print(f"   • Queue Manager Current Processing: {queue_manager.current_processing}")
+            print(f"   • Queue Manager Queue Size: {len(queue_manager.chat_queue)}")
+        except Exception as e:
+            print(f"   • Queue Manager Error: {e}")
+        
         print("\nPress Enter to continue...")
         input()
         self._print_ui()
