@@ -45,6 +45,78 @@ class OllamaService:
                 timeout=300
             )
             
+            # Kiểm tra response content trước khi xử lý
+            try:
+                content_type = response.headers.get('content-type', '')
+                if 'application/json' in content_type:
+                    try:
+                        response_json = response.json()
+                        
+                        if not response_json.get('success', True):
+                            error_code = response_json.get('data', {}).get('code', 'Unknown')
+                            error_details = response_json.get('data', {}).get('details', 'Unknown error')
+                            logger.error(f"Qwen API error: {error_code} - {error_details}")
+                            
+                            if error_code == "Bad_Request" and "parent_id" in error_details and "not exist" in error_details:
+                                # Xử lý lỗi parent_id không tồn tại
+                                logger.warning(f"Parent ID not exist error detected: {error_details}")
+                                logger.info("Creating new chat and resetting parent_id...")
+                                
+                                # Tạo chat mới và reset parent_id
+                                new_chat_id = qwen_service.create_new_chat(model)
+                                if new_chat_id:
+                                    logger.info(f"New chat created with ID: {new_chat_id}")
+                                    # Gửi lại request với parent_id = None
+                                    qwen_data = qwen_service.prepare_qwen_request(data, new_chat_id, model)
+                                    
+                                    logger.info(f"Retrying request with new chat_id: {new_chat_id} and parent_id: None")
+                                    retry_response = requests.post(
+                                        f"{QWEN_CHAT_COMPLETIONS_URL}?chat_id={new_chat_id}",
+                                        headers=QWEN_HEADERS,
+                                        json=qwen_data,
+                                        stream=True,
+                                        timeout=300
+                                    )
+                                    
+                                    if retry_response.status_code == 200:
+                                        logger.info("Retry successful, continuing with new chat...")
+                                        # Tiếp tục xử lý response từ retry
+                                        response = retry_response
+                                    else:
+                                        logger.error(f"Retry failed with status: {retry_response.status_code}")
+                                        error_created_at = datetime.now().isoformat() + "Z"
+                                        error_chunk = {
+                                            "model": model,
+                                            "created_at": error_created_at,
+                                            "message": {
+                                                "role": "assistant",
+                                                "content": ""
+                                            },
+                                            "done": True,
+                                            "error": f"Failed to retry with new chat: {retry_response.status_code}"
+                                        }
+                                        yield json.dumps(error_chunk) + "\n"
+                                        return
+                                else:
+                                    logger.error("Failed to create new chat for retry")
+                                    error_created_at = datetime.now().isoformat() + "Z"
+                                    error_chunk = {
+                                        "model": model,
+                                        "created_at": error_created_at,
+                                        "message": {
+                                            "role": "assistant",
+                                            "content": ""
+                                        },
+                                        "done": True,
+                                        "error": "Failed to create new chat for retry"
+                                    }
+                                    yield json.dumps(error_chunk) + "\n"
+                                    return
+                    except json.JSONDecodeError as e:
+                        logger.error(f"Error parsing JSON response: {e}")
+            except Exception as e:
+                logger.error(f"Error reading response content: {e}")
+            
             if response.status_code == 200:
                 for line in response.iter_lines():
                     if line:
@@ -238,6 +310,54 @@ class OllamaService:
             )
             
             logger.info(f"Qwen API response status: {response.status_code}")
+            
+            # Kiểm tra response content trước khi xử lý
+            try:
+                content_type = response.headers.get('content-type', '')
+                if 'application/json' in content_type:
+                    try:
+                        response_json = response.json()
+                        
+                        if not response_json.get('success', True):
+                            error_code = response_json.get('data', {}).get('code', 'Unknown')
+                            error_details = response_json.get('data', {}).get('details', 'Unknown error')
+                            logger.error(f"Qwen API error: {error_code} - {error_details}")
+                            
+                            if error_code == "Bad_Request" and "parent_id" in error_details and "not exist" in error_details:
+                                # Xử lý lỗi parent_id không tồn tại
+                                logger.warning(f"Parent ID not exist error detected: {error_details}")
+                                logger.info("Creating new chat and resetting parent_id...")
+                                
+                                # Tạo chat mới và reset parent_id
+                                new_chat_id = qwen_service.create_new_chat(model)
+                                if new_chat_id:
+                                    logger.info(f"New chat created with ID: {new_chat_id}")
+                                    # Gửi lại request với parent_id = None
+                                    qwen_data = qwen_service.prepare_qwen_request(data, new_chat_id, model)
+                                    
+                                    logger.info(f"Retrying request with new chat_id: {new_chat_id} and parent_id: None")
+                                    retry_response = requests.post(
+                                        f"{QWEN_CHAT_COMPLETIONS_URL}?chat_id={new_chat_id}",
+                                        headers=QWEN_HEADERS,
+                                        json=qwen_data,
+                                        stream=True,
+                                        timeout=300
+                                    )
+                                    
+                                    if retry_response.status_code == 200:
+                                        logger.info("Retry successful, continuing with new chat...")
+                                        # Tiếp tục xử lý response từ retry
+                                        response = retry_response
+                                    else:
+                                        logger.error(f"Retry failed with status: {retry_response.status_code}")
+                                        return {'content': f'Error: Failed to retry with new chat: {retry_response.status_code}'}
+                                else:
+                                    logger.error("Failed to create new chat for retry")
+                                    return {'content': 'Error: Failed to create new chat for retry'}
+                    except json.JSONDecodeError as e:
+                        logger.error(f"Error parsing JSON response: {e}")
+            except Exception as e:
+                logger.error(f"Error reading response content: {e}")
             
             if response.status_code == 200:
                 # Capture toàn bộ content từ stream

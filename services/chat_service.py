@@ -90,11 +90,48 @@ class ChatService:
                             
                             if error_code == "Bad_Request" and "chat is in progress" in error_details:
                                 error_msg = "Chat is currently in progress. Please wait for the current request to complete."
+                            elif error_code == "Bad_Request" and "parent_id" in error_details and "not exist" in error_details:
+                                # Xử lý lỗi parent_id không tồn tại
+                                logger.warning(f"Parent ID not exist error detected: {error_details}")
+                                logger.info("Creating new chat and resetting parent_id...")
+                                
+                                # Tạo chat mới và reset parent_id
+                                new_chat_id = chat_manager.create_new_chat(model)
+                                if new_chat_id:
+                                    logger.info(f"New chat created with ID: {new_chat_id}")
+                                    # Gửi lại request với parent_id = None
+                                    qwen_data = qwen_service.prepare_qwen_request(data, new_chat_id, model, None)
+                                    
+                                    logger.info(f"Retrying request with new chat_id: {new_chat_id} and parent_id: None")
+                                    retry_response = requests.post(
+                                        f"{QWEN_CHAT_COMPLETIONS_URL}?chat_id={new_chat_id}",
+                                        headers=QWEN_HEADERS,
+                                        json=qwen_data,
+                                        stream=True,
+                                        timeout=300
+                                    )
+                                    
+                                    if retry_response.status_code == 200:
+                                        logger.info("Retry successful, continuing with new chat...")
+                                        # Tiếp tục xử lý response từ retry
+                                        response = retry_response
+                                        # Tiếp tục xử lý response bình thường
+                                        yield from self._process_qwen_stream_response(response, model, request_state)
+                                        return
+                                    else:
+                                        logger.error(f"Retry failed with status: {retry_response.status_code}")
+                                        error_msg = f"Failed to retry with new chat: {retry_response.status_code}"
+                                        yield f"data: {json.dumps({'error': error_msg})}\n\n"
+                                        return
+                                else:
+                                    logger.error("Failed to create new chat for retry")
+                                    error_msg = "Failed to create new chat for retry"
+                                    yield f"data: {json.dumps({'error': error_msg})}\n\n"
+                                    return
                             else:
                                 error_msg = f"Qwen API error: {error_code} - {error_details}"
-                            
-                            yield f"data: {json.dumps({'error': error_msg})}\n\n"
-                            return
+                                yield f"data: {json.dumps({'error': error_msg})}\n\n"
+                                return
                     except json.JSONDecodeError as e:
                         logger.error(f"Error parsing JSON response: {e}")
                 else:
@@ -103,186 +140,7 @@ class ChatService:
                 logger.error(f"Error reading response content: {e}")
             
             if response.status_code == 200:
-                logger.info("Starting to stream response from Qwen API...")
-                chunk_count = 0
-                
-                # Xử lý response content dựa trên encoding
-                content_encoding = response.headers.get('content-encoding', '').lower()
-                logger.info(f"Response content-encoding: {content_encoding}")
-                
-                if content_encoding == 'br':
-                    # Brotli compression - xử lý streaming từng line riêng biệt
-                    try:
-                        import brotli
-                        logger.info("Processing Brotli compressed streaming response...")
-                        
-                        # Xử lý từng line streaming riêng biệt với timeout
-                        start_time = time.time()
-                        for line in response.iter_lines():
-                            # Kiểm tra timeout mỗi 10 giây
-                            if time.time() - start_time > 300:  # 5 phút timeout
-                                logger.error("Stream reading timeout")
-                                yield f"data: {json.dumps({'error': 'Stream reading timeout'})}\n\n"
-                                return
-                                
-                            if line:
-                                try:
-                                    # Raw data đã được decompress sẵn, chỉ cần decode
-                                    line_text = line.decode('utf-8')
-                                    
-                                    if line_text.startswith('data: '):
-                                        data_content = line_text[6:]  # Bỏ 'data: '
-                                        if data_content.strip():
-                                            chunk_count += 1
-                                            # Chuyển đổi response format để giống LM Studio
-                                            try:
-                                                qwen_data = json.loads(data_content)
-                                                
-                                                # Xử lý response.created để lấy parent_id và response_id
-                                                if 'response.created' in qwen_data:
-                                                    response_created = qwen_data['response.created']
-                                                    parent_id = response_created.get('parent_id')
-                                                    response_id = response_created.get('response_id')
-                                                    if parent_id and response_id:
-                                                        chat_manager.update_parent_info(parent_id, response_id)
-                                                        logger.info(f"Updated parent_id: {parent_id}, response_id: {response_id}")
-                                                    continue  # Bỏ qua chunk này, không gửi về client
-                                                
-                                                if 'choices' in qwen_data and len(qwen_data['choices']) > 0:
-                                                    # Stream tất cả content như LM Studio thực sự làm
-                                                    delta = qwen_data['choices'][0].get('delta', {})
-                                                    finish_reason = qwen_data['choices'][0].get('finish_reason', None)
-                                                    phase = delta.get('phase', None)
-                                                    
-                                                    # Log phase nếu có thay đổi
-                                                    request_state.log_phase_change(phase)
-                                                    
-                                                    # Xử lý think mode
-                                                    if phase == "think":
-                                                        # Nếu bắt đầu think mode và chưa gửi <think> tag
-                                                        if not request_state.think_started:
-                                                            request_state.think_started = True
-                                                            # Gửi <think> tag
-                                                            openai_format = {
-                                                                "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
-                                                                "object": "chat.completion.chunk",
-                                                                "created": int(time.time()),
-                                                                "model": model,
-                                                                "system_fingerprint": model,
-                                                                "choices": [{
-                                                                    "index": 0,
-                                                                    "delta": {"content": "<think>"},
-                                                                    "logprobs": None,
-                                                                    "finish_reason": None
-                                                                }]
-                                                            }
-                                                            yield f"data: {json.dumps(openai_format)}\n\n"
-                                                        
-                                                        # Gửi content trong think mode
-                                                        if 'content' in delta:
-                                                            openai_format = {
-                                                                "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
-                                                                "object": "chat.completion.chunk",
-                                                                "created": int(time.time()),
-                                                                "model": model,
-                                                                "system_fingerprint": model,
-                                                                "choices": [{
-                                                                    "index": 0,
-                                                                    "delta": {"content": delta['content']},
-                                                                    "logprobs": None,
-                                                                    "finish_reason": finish_reason
-                                                                }]
-                                                            }
-                                                            yield f"data: {json.dumps(openai_format)}\n\n"
-                                                        
-                                                        # Nếu think mode kết thúc (status finished)
-                                                        if delta.get('status') == 'finished':
-                                                            # Gửi </think> tag
-                                                            openai_format = {
-                                                                "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
-                                                                "object": "chat.completion.chunk",
-                                                                "created": int(time.time()),
-                                                                "model": model,
-                                                                "system_fingerprint": model,
-                                                                "choices": [{
-                                                                    "index": 0,
-                                                                    "delta": {"content": "</think>"},
-                                                                    "logprobs": None,
-                                                                    "finish_reason": None
-                                                                }]
-                                                            }
-                                                            yield f"data: {json.dumps(openai_format)}\n\n"
-                                                            # Reset think state
-                                                            request_state.think_started = False
-                                                    elif phase == "answer" or phase is None:
-                                                        # Normal content (answer phase hoặc không có phase)
-                                                        if 'content' in delta:
-                                                            # Format giống LM Studio
-                                                            openai_format = {
-                                                                "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
-                                                                "object": "chat.completion.chunk",
-                                                                "created": int(time.time()),
-                                                                "model": model,
-                                                                "system_fingerprint": model,
-                                                                "choices": [{
-                                                                    "index": 0,
-                                                                    "delta": {"content": delta['content']},
-                                                                    "logprobs": None,
-                                                                    "finish_reason": finish_reason
-                                                                }]
-                                                            }
-                                                            yield f"data: {json.dumps(openai_format)}\n\n"
-                                                    
-                                                    # Nếu có finish_reason, gửi [DONE] message
-                                                    if finish_reason:
-                                                        logger.info(f"Received finish_reason: {finish_reason}, sending [DONE] and returning")
-                                                        yield "data: [DONE]\n\n"
-                                                        return
-                                                else:
-                                                    pass
-                                                    # Bỏ qua các message không có choices
-                                            except json.JSONDecodeError as e:
-                                                logger.error(f"JSON decode error on chunk {chunk_count}: {e}")
-                                                # Gửi error message format đúng
-                                                error_format = {
-                                                    "error": {
-                                                        "message": f"Invalid JSON in response: {str(e)}",
-                                                        "type": "server_error"
-                                                    }
-                                                }
-                                                yield f"data: {json.dumps(error_format)}\n\n"
-                                                return
-                                            except Exception as e:
-                                                logger.error(f"Error parsing chunk {chunk_count}: {e}")
-                                                # Gửi error message format đúng
-                                                error_format = {
-                                                    "error": {
-                                                        "message": f"Error processing response: {str(e)}",
-                                                        "type": "server_error"
-                                                    }
-                                                }
-                                                yield f"data: {json.dumps(error_format)}\n\n"
-                                                return
-                                except UnicodeDecodeError as e:
-                                    logger.error(f"Unicode decode error on line: {e}")
-                                    continue
-                                except Exception as e:
-                                    logger.error(f"Unexpected error processing line: {e}")
-                                    continue
-                                    
-                    except ImportError:
-                        logger.error("Brotli library not installed. Please install: pip install brotli")
-                        yield f"data: {json.dumps({'error': 'Brotli decompression not available'})}\n\n"
-                        return
-                    except Exception as e:
-                        logger.error(f"Error processing Brotli stream: {e}")
-                        yield f"data: {json.dumps({'error': f'Stream processing error: {e}'})}\n\n"
-                        return
-                
-                logger.info(f"Streaming completed. Total chunks: {chunk_count}")
-                # Gửi [DONE] message ở cuối nếu chưa có
-                logger.info("Sending final [DONE] message")
-                yield "data: [DONE]\n\n"
+                yield from self._process_qwen_stream_response(response, model, request_state)
             else:
                 error_msg = f"Error from Qwen API: {response.status_code}"
                 logger.error(f"Qwen API error: {response.status_code} - {response.text}")
@@ -296,6 +154,255 @@ class ChatService:
             error_msg = f"Error: {str(e)}"
             logger.error(f"Stream function error: {e}")
             yield f"data: {json.dumps({'error': error_msg})}\n\n"
+    
+    def _process_qwen_stream_response(self, response, model, request_state):
+        """Xử lý response streaming từ Qwen API"""
+        logger.info("Starting to stream response from Qwen API...")
+        chunk_count = 0
+        
+        # Xử lý response content dựa trên encoding
+        content_encoding = response.headers.get('content-encoding', '').lower()
+        logger.info(f"Response content-encoding: {content_encoding}")
+        
+        if content_encoding == 'br':
+            # Brotli compression - xử lý streaming từng line riêng biệt
+            try:
+                import brotli
+                logger.info("Processing Brotli compressed streaming response...")
+                
+                # Xử lý từng line streaming riêng biệt với timeout
+                start_time = time.time()
+                for line in response.iter_lines():
+                    # Kiểm tra timeout mỗi 10 giây
+                    if time.time() - start_time > 300:  # 5 phút timeout
+                        logger.error("Stream reading timeout")
+                        yield f"data: {json.dumps({'error': 'Stream reading timeout'})}\n\n"
+                        return
+                        
+                    if line:
+                        try:
+                            # Raw data đã được decompress sẵn, chỉ cần decode
+                            line_text = line.decode('utf-8')
+                            
+                            if line_text.startswith('data: '):
+                                data_content = line_text[6:]  # Bỏ 'data: '
+                                if data_content.strip():
+                                    chunk_count += 1
+                                    # Chuyển đổi response format để giống LM Studio
+                                    try:
+                                        qwen_data = json.loads(data_content)
+                                        
+                                        # Xử lý response.created để lấy parent_id và response_id
+                                        if 'response.created' in qwen_data:
+                                            response_created = qwen_data['response.created']
+                                            parent_id = response_created.get('parent_id')
+                                            response_id = response_created.get('response_id')
+                                            if parent_id and response_id:
+                                                chat_manager.update_parent_info(parent_id, response_id)
+                                                logger.info(f"Updated parent_id: {parent_id}, response_id: {response_id}")
+                                            continue  # Bỏ qua chunk này, không gửi về client
+                                        
+                                        if 'choices' in qwen_data and len(qwen_data['choices']) > 0:
+                                            # Stream tất cả content như LM Studio thực sự làm
+                                            delta = qwen_data['choices'][0].get('delta', {})
+                                            finish_reason = qwen_data['choices'][0].get('finish_reason', None)
+                                            phase = delta.get('phase', None)
+                                            
+                                            # Log phase nếu có thay đổi
+                                            request_state.log_phase_change(phase)
+                                            
+                                            # Xử lý think mode
+                                            if phase == "think":
+                                                # Nếu bắt đầu think mode và chưa gửi <think> tag
+                                                if not request_state.think_started:
+                                                    request_state.think_started = True
+                                                    # Gửi <think> tag
+                                                    openai_format = {
+                                                        "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
+                                                        "object": "chat.completion.chunk",
+                                                        "created": int(time.time()),
+                                                        "model": model,
+                                                        "system_fingerprint": model,
+                                                        "choices": [{
+                                                            "index": 0,
+                                                            "delta": {"content": "<think>"},
+                                                            "logprobs": None,
+                                                            "finish_reason": None
+                                                        }]
+                                                    }
+                                                    yield f"data: {json.dumps(openai_format)}\n\n"
+                                                
+                                                # Gửi content trong think mode
+                                                if 'content' in delta:
+                                                    openai_format = {
+                                                        "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
+                                                        "object": "chat.completion.chunk",
+                                                        "created": int(time.time()),
+                                                        "model": model,
+                                                        "system_fingerprint": model,
+                                                        "choices": [{
+                                                            "index": 0,
+                                                            "delta": {"content": delta['content']},
+                                                            "logprobs": None,
+                                                            "finish_reason": finish_reason
+                                                        }]
+                                                    }
+                                                    yield f"data: {json.dumps(openai_format)}\n\n"
+                                                
+                                                # Nếu think mode kết thúc (status finished)
+                                                if delta.get('status') == 'finished':
+                                                    # Gửi </think> tag
+                                                    openai_format = {
+                                                        "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
+                                                        "object": "chat.completion.chunk",
+                                                        "created": int(time.time()),
+                                                        "model": model,
+                                                        "system_fingerprint": model,
+                                                        "choices": [{
+                                                            "index": 0,
+                                                            "delta": {"content": "</think>"},
+                                                            "logprobs": None,
+                                                            "finish_reason": None
+                                                        }]
+                                                    }
+                                                    yield f"data: {json.dumps(openai_format)}\n\n"
+                                                    # Reset think state
+                                                    request_state.think_started = False
+                                            elif phase == "answer" or phase is None:
+                                                # Normal content (answer phase hoặc không có phase)
+                                                if 'content' in delta:
+                                                    # Format giống LM Studio
+                                                    openai_format = {
+                                                        "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
+                                                        "object": "chat.completion.chunk",
+                                                        "created": int(time.time()),
+                                                        "model": model,
+                                                        "system_fingerprint": model,
+                                                        "choices": [{
+                                                            "index": 0,
+                                                            "delta": {"content": delta['content']},
+                                                            "logprobs": None,
+                                                            "finish_reason": finish_reason
+                                                        }]
+                                                    }
+                                                    yield f"data: {json.dumps(openai_format)}\n\n"
+                                            
+                                            # Nếu có finish_reason, gửi [DONE] message
+                                            if finish_reason:
+                                                logger.info(f"Received finish_reason: {finish_reason}, sending [DONE] and returning")
+                                                yield "data: [DONE]\n\n"
+                                                return
+                                        else:
+                                            pass
+                                            # Bỏ qua các message không có choices
+                                    except json.JSONDecodeError as e:
+                                        logger.error(f"JSON decode error on chunk {chunk_count}: {e}")
+                                        # Gửi error message format đúng
+                                        error_format = {
+                                            "error": {
+                                                "message": f"Invalid JSON in response: {str(e)}",
+                                                "type": "server_error"
+                                            }
+                                        }
+                                        yield f"data: {json.dumps(error_format)}\n\n"
+                                        return
+                        except Exception as e:
+                            logger.error(f"Error processing line: {e}")
+                            continue
+            except Exception as e:
+                logger.error(f"Error in Brotli streaming: {e}")
+                yield f"data: {json.dumps({'error': f'Streaming error: {str(e)}'})}\n\n"
+                return
+        else:
+            # Xử lý response không nén
+            logger.info("Processing uncompressed streaming response...")
+            for line in response.iter_lines():
+                if line:
+                    try:
+                        line_text = line.decode('utf-8')
+                        if line_text.startswith('data: '):
+                            data_content = line_text[6:]
+                            if data_content.strip():
+                                chunk_count += 1
+                                try:
+                                    qwen_data = json.loads(data_content)
+                                    
+                                    # Xử lý response.created
+                                    if 'response.created' in qwen_data:
+                                        response_created = qwen_data['response.created']
+                                        parent_id = response_created.get('parent_id')
+                                        response_id = response_created.get('response_id')
+                                        if parent_id and response_id:
+                                            chat_manager.update_parent_info(parent_id, response_id)
+                                        continue
+                                    
+                                    if 'choices' in qwen_data and len(qwen_data['choices']) > 0:
+                                        delta = qwen_data['choices'][0].get('delta', {})
+                                        finish_reason = qwen_data['choices'][0].get('finish_reason', None)
+                                        phase = delta.get('phase', None)
+                                        
+                                        request_state.log_phase_change(phase)
+                                        
+                                        if 'content' in delta:
+                                            openai_format = {
+                                                "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
+                                                "object": "chat.completion.chunk",
+                                                "created": int(time.time()),
+                                                "model": model,
+                                                "system_fingerprint": model,
+                                                "choices": [{
+                                                    "index": 0,
+                                                    "delta": {"content": delta['content']},
+                                                    "logprobs": None,
+                                                    "finish_reason": finish_reason
+                                                }]
+                                            }
+                                            yield f"data: {json.dumps(openai_format)}\n\n"
+                                        
+                                        if finish_reason:
+                                            yield "data: [DONE]\n\n"
+                                            return
+                                except json.JSONDecodeError as e:
+                                    logger.error(f"JSON decode error: {e}")
+                                    continue
+                    except Exception as e:
+                        logger.error(f"Error processing line: {e}")
+                        continue
+    
+    def _process_qwen_non_streaming_response(self, response, model):
+        """Xử lý non-streaming response từ Qwen API"""
+        qwen_response = response.json()
+        
+        # Xử lý response.created để lấy parent_id và response_id (cho non-streaming)
+        if 'response' in qwen_response and 'created' in qwen_response['response']:
+            response_created = qwen_response['response']['created']
+            parent_id = response_created.get('parent_id')
+            response_id = response_created.get('response_id')
+            if parent_id and response_id:
+                chat_manager.update_parent_info(parent_id, response_id)
+                logger.info(f"Updated parent_id: {parent_id}, response_id: {response_id}")
+        
+        # Chuyển đổi response từ Qwen format sang OpenAI format
+        openai_response = {
+            "id": f"chatcmpl-{uuid.uuid4()}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": qwen_response.get('choices', [{}])[0].get('message', {}).get('content', '')
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": qwen_response.get('usage', {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0
+            })
+        }
+        return openai_response
     
     def stream_qwen_response_non_streaming(self, data):
         """Non-streaming response from Qwen API"""
@@ -357,6 +464,50 @@ class ChatService:
                             
                             if error_code == "Bad_Request" and "chat is in progress" in error_details:
                                 error_msg = "Chat is currently in progress. Please wait for the current request to complete."
+                            elif error_code == "Bad_Request" and "parent_id" in error_details and "not exist" in error_details:
+                                # Xử lý lỗi parent_id không tồn tại cho non-streaming
+                                logger.warning(f"Parent ID not exist error detected: {error_details}")
+                                logger.info("Creating new chat and resetting parent_id...")
+                                
+                                # Tạo chat mới và reset parent_id
+                                new_chat_id = chat_manager.create_new_chat(model)
+                                if new_chat_id:
+                                    logger.info(f"New chat created with ID: {new_chat_id}")
+                                    # Gửi lại request với parent_id = None
+                                    qwen_data = qwen_service.prepare_qwen_request(data, new_chat_id, model, None)
+                                    
+                                    logger.info(f"Retrying request with new chat_id: {new_chat_id} and parent_id: None")
+                                    retry_response = requests.post(
+                                        f"{QWEN_CHAT_COMPLETIONS_URL}?chat_id={new_chat_id}",
+                                        headers=QWEN_HEADERS,
+                                        json=qwen_data,
+                                        timeout=300
+                                    )
+                                    
+                                    if retry_response.status_code == 200:
+                                        logger.info("Retry successful, continuing with new chat...")
+                                        # Tiếp tục xử lý response từ retry
+                                        response = retry_response
+                                        # Tiếp tục xử lý response bình thường
+                                        return self._process_qwen_non_streaming_response(response, model)
+                                    else:
+                                        logger.error(f"Retry failed with status: {retry_response.status_code}")
+                                        error_msg = f"Failed to retry with new chat: {retry_response.status_code}"
+                                        return {
+                                            "error": {
+                                                "message": error_msg,
+                                                "type": "server_error"
+                                            }
+                                        }, 500
+                                else:
+                                    logger.error("Failed to create new chat for retry")
+                                    error_msg = "Failed to create new chat for retry"
+                                    return {
+                                        "error": {
+                                            "message": error_msg,
+                                            "type": "server_error"
+                                        }
+                                    }, 500
                             else:
                                 error_msg = f"Qwen API error: {error_code} - {error_details}"
                             
@@ -374,38 +525,7 @@ class ChatService:
                 logger.error(f"Error reading response content: {e}")
             
             if response.status_code == 200:
-                qwen_response = response.json()
-                
-                # Xử lý response.created để lấy parent_id và response_id (cho non-streaming)
-                if 'response' in qwen_response and 'created' in qwen_response['response']:
-                    response_created = qwen_response['response']['created']
-                    parent_id = response_created.get('parent_id')
-                    response_id = response_created.get('response_id')
-                    if parent_id and response_id:
-                        chat_manager.update_parent_info(parent_id, response_id)
-                        logger.info(f"Updated parent_id: {parent_id}, response_id: {response_id}")
-                
-                # Chuyển đổi response từ Qwen format sang OpenAI format
-                openai_response = {
-                    "id": f"chatcmpl-{uuid.uuid4()}",
-                    "object": "chat.completion",
-                    "created": int(time.time()),
-                    "model": model,
-                    "choices": [{
-                        "index": 0,
-                        "message": {
-                            "role": "assistant",
-                            "content": qwen_response.get('choices', [{}])[0].get('message', {}).get('content', '')
-                        },
-                        "finish_reason": "stop"
-                    }],
-                    "usage": qwen_response.get('usage', {
-                        "prompt_tokens": 0,
-                        "completion_tokens": 0,
-                        "total_tokens": 0
-                    })
-                }
-                return openai_response
+                return self._process_qwen_non_streaming_response(response, model)
             else:
                 return {
                     "error": {
