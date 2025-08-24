@@ -1,4 +1,5 @@
 from flask import Flask, request, Response, jsonify
+from flask_cors import CORS
 import uuid
 import time
 import socket
@@ -35,6 +36,9 @@ def parse_arguments():
 # Cấu hình Flask để trả về JSON đẹp
 app = Flask(__name__)
 app.config['JSONIFY_PRETTYPRINT_REGULAR'] = True
+
+# Cấu hình CORS để cho phép tất cả origin
+CORS(app, origins="*", supports_credentials=True)
 
 # Cấu hình để chấp nhận header request rất dài
 app.config['MAX_CONTENT_LENGTH'] = 2048 * 1024 * 1024  # 2GB
@@ -119,6 +123,28 @@ def before_request():
         if not request.content_type or 'application/json' not in request.content_type:
             # Set Content-Type để Flask không báo lỗi
             request.environ['CONTENT_TYPE'] = 'application/json'
+
+@app.route('/', methods=['GET'])
+def root():
+    """Root endpoint"""
+    route_info = "GET / - Root"
+    logger.info(f"ROUTE: {route_info}")
+    terminal_ui.update_route(route_info)
+    
+    return "Ollama is running"
+
+@app.route('/', methods=['OPTIONS'])
+def root_options():
+    """OPTIONS for root endpoint"""
+    route_info = "OPTIONS / - Root"
+    logger.info(f"ROUTE: {route_info}")
+    terminal_ui.update_route(route_info)
+    
+    response = Response()
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    return response
 
 def parse_tools_to_text(tools):
     """Parse tools thành text format"""
@@ -248,20 +274,47 @@ def ask_server_mode():
             sys.exit(0)
 
 # LM Studio API Endpoints
-@app.route('/v1/models', methods=['GET'])
+@app.route('/v1/models', methods=['GET', 'OPTIONS'])
 def list_models():
     """List the currently loaded models"""
-    if SERVER_MODE != "lmstudio":
-        return jsonify({"error": "Endpoint not available in current mode"}), 404
+    if request.method == 'OPTIONS':
+        route_info = "OPTIONS /v1/models - List Models"
+        logger.info(f"ROUTE: {route_info}")
+        terminal_ui.update_route(route_info)
         
+        response = Response()
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+        return response
+    
     route_info = "GET /v1/models - List Models"
     logger.info(f"ROUTE: {route_info}")
     terminal_ui.update_route(route_info)
     
     models = qwen_service.get_models_from_qwen()
+    
+    if SERVER_MODE == "ollama":
+        # Convert to Ollama format
+        formatted_models = []
+        for model in models:
+            model_id = model.get('id', '')
+            if model_id:
+                # Add :latest suffix for Ollama format
+                model_name_with_latest = f"{model_id}:latest"
+                formatted_models.append({
+                    "id": model_name_with_latest,
+                    "object": "model",
+                    "created": int(time.time()),
+                    "owned_by": "library"
+                })
+    else:
+        # LM Studio format - use original models data
+        formatted_models = models
+    
     response = jsonify({
         "object": "list",
-        "data": models
+        "data": formatted_models
     })
     response.headers['Content-Type'] = 'application/json'
     return response
@@ -379,6 +432,11 @@ def chat_completions():
     data = request.get_json()
     stream = data.get('stream', False)
     model = data.get('model', 'qwen3-235b-a22b')
+    
+    # Remove :latest suffix for Ollama mode
+    if SERVER_MODE == "ollama" and model.endswith(':latest'):
+        model = model[:-7]  # Remove :latest
+        data['model'] = model  # Update the model in data
     
     route_info = f"POST /v1/chat/completions - Chat ({model}, stream: {stream})"
     logger.info(f"ROUTE: {route_info}")
