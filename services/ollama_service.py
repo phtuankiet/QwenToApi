@@ -26,6 +26,21 @@ class OllamaService:
         logger.info(f"Ollama stream function called with model: {model}, request_id: {request_id}")
         
         try:
+            stream_start_ns = time.perf_counter_ns()
+            first_token_ns = None
+            output_token_count = 0
+            input_token_count = 0
+            # Ước lượng token đầu vào dựa trên số từ trong messages
+            try:
+                msgs = data.get('messages') or []
+                if isinstance(msgs, list):
+                    for m in msgs:
+                        if isinstance(m, dict):
+                            txt = m.get('content') or ""
+                            if isinstance(txt, str):
+                                input_token_count += max(1, len(txt.strip().split()))
+            except Exception:
+                pass
             # Tạo chat mới
             chat_id = qwen_service.create_new_chat(model)
             if not chat_id:
@@ -118,10 +133,13 @@ class OllamaService:
                 logger.error(f"Error reading response content: {e}")
             
             if response.status_code == 200:
+                done_sent = False
                 for line in response.iter_lines():
                     if line:
                         line_str = line.decode('utf-8')
                         if line_str.startswith('data: '):
+                            if first_token_ns is None:
+                                first_token_ns = time.perf_counter_ns()
                             try:
                                 chunk_data = json.loads(line_str[6:])
                                 
@@ -175,6 +193,8 @@ class OllamaService:
                                                 },
                                                 "done": False
                                             }
+                                            # Ước lượng token đầu ra (số từ)
+                                            output_token_count += max(1, len(content.strip().split()))
                                             yield json.dumps(ollama_chunk) + "\n"
                                         
                                         # Nếu think mode kết thúc (status finished)
@@ -194,13 +214,17 @@ class OllamaService:
                                                 },
                                                 "done": False
                                             }
+                                            output_token_count += max(1, len(content.strip().split()))
                                             yield json.dumps(ollama_chunk) + "\n"
                                     
                                     # Nếu có finish_reason, gửi done message
                                     if finish_reason:
                                         final_created_at = datetime.now().isoformat() + "Z"
+                                        total_duration = time.perf_counter_ns() - stream_start_ns
+                                        load_duration = (first_token_ns - stream_start_ns) if first_token_ns else 0
+                                        eval_duration = (time.perf_counter_ns() - first_token_ns) if first_token_ns else 0
                                         final_chunk = {
-                                            "model": model,
+                                            "model": f"{model}:latest",
                                             "created_at": final_created_at,
                                             "message": {
                                                 "role": "assistant",
@@ -208,14 +232,15 @@ class OllamaService:
                                             },
                                             "done_reason": "stop",
                                             "done": True,
-                                            "total_duration": 1325357400,
-                                            "load_duration": 16368200,
-                                            "prompt_eval_count": 13,
-                                            "prompt_eval_duration": 50000000,
-                                            "eval_count": 59,
-                                            "eval_duration": 1258000000
+                                            "total_duration": int(total_duration),
+                                            "load_duration": int(load_duration),
+                                            "prompt_eval_count": int(input_token_count),
+                                            "prompt_eval_duration": int(load_duration),
+                                            "eval_count": int(output_token_count),
+                                            "eval_duration": int(eval_duration)
                                         }
                                         yield json.dumps(final_chunk) + "\n"
+                                        done_sent = True
                                         break
                                         
                             except json.JSONDecodeError:
@@ -223,9 +248,12 @@ class OllamaService:
                         elif line_str.startswith('data: [DONE]'):
                             # Send final done message
                             final_created_at = datetime.now().isoformat() + "Z"
+                            total_duration = time.perf_counter_ns() - stream_start_ns
+                            load_duration = (first_token_ns - stream_start_ns) if first_token_ns else 0
+                            eval_duration = (time.perf_counter_ns() - first_token_ns) if first_token_ns else 0
                             
                             final_chunk = {
-                                "model": model,
+                                "model": f"{model}:latest",
                                 "created_at": final_created_at,
                                 "message": {
                                     "role": "assistant",
@@ -233,15 +261,39 @@ class OllamaService:
                                 },
                                 "done_reason": "stop",
                                 "done": True,
-                                "total_duration": 1325357400,
-                                "load_duration": 16368200,
-                                "prompt_eval_count": 13,
-                                "prompt_eval_duration": 50000000,
-                                "eval_count": 59,
-                                "eval_duration": 1258000000
+                                "total_duration": int(total_duration),
+                                "load_duration": int(load_duration),
+                                "prompt_eval_count": int(input_token_count),
+                                "prompt_eval_duration": int(load_duration),
+                                "eval_count": int(output_token_count),
+                                "eval_duration": int(eval_duration)
                             }
                             yield json.dumps(final_chunk) + "\n"
+                            done_sent = True
                             break
+                # Nếu vì lý do nào đó không gửi final_chunk ở trên, gửi một bản mặc định
+                if not done_sent:
+                    final_created_at = datetime.now().isoformat() + "Z"
+                    total_duration = time.perf_counter_ns() - stream_start_ns
+                    load_duration = (first_token_ns - stream_start_ns) if first_token_ns else 0
+                    eval_duration = (time.perf_counter_ns() - first_token_ns) if first_token_ns else 0
+                    fallback_chunk = {
+                        "model": f"{model}:latest",
+                        "created_at": final_created_at,
+                        "message": {
+                            "role": "assistant",
+                            "content": ""
+                        },
+                        "done_reason": "stop",
+                        "done": True,
+                        "total_duration": int(total_duration),
+                        "load_duration": int(load_duration),
+                        "prompt_eval_count": int(input_token_count),
+                        "prompt_eval_duration": int(load_duration),
+                        "eval_count": int(output_token_count),
+                        "eval_duration": int(eval_duration)
+                    }
+                    yield json.dumps(fallback_chunk) + "\n"
             else:
                 logger.error(f"Qwen API error: {response.status_code}")
                 error_created_at = datetime.now().isoformat() + "Z"
