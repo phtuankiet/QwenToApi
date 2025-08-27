@@ -4,6 +4,7 @@ import uuid
 import json
 import logging
 from config import QWEN_HEADERS, QWEN_MODELS_URL, QWEN_NEW_CHAT_URL, QWEN_CHAT_COMPLETIONS_URL
+from utils.cookie_parser import build_header
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +17,8 @@ class QwenService:
     def get_models_from_qwen(self):
         """Lấy danh sách models từ Qwen API"""
         try:
-            response = requests.get(QWEN_MODELS_URL, headers=QWEN_HEADERS)
+            headers = build_header(QWEN_HEADERS)
+            response = requests.get(QWEN_MODELS_URL, headers=headers)
             
             if response.status_code == 200:
                 models_data = response.json()
@@ -24,10 +26,42 @@ class QwenService:
                 # Chuyển đổi format từ Qwen sang OpenAI
                 openai_models = []
                 for model in models_data.get('data', []):
+                    # Chỉ lấy model active
+                    info = model.get('info', {}) or {}
+                    if not info.get('is_active', False):
+                        continue
+
+                    meta = info.get('meta', {}) or {}
+
+                    # Lấy context length
+                    max_context_length = meta.get('max_context_length')
+
+                    # Lấy generation length với thứ tự ưu tiên
+                    gen_len = meta.get('max_generation_length')
+                    if gen_len is None:
+                        gen_len = meta.get('max_thinking_generation_length')
+                    if gen_len is None:
+                        gen_len = meta.get('max_summary_generation_length')
+
+                    # Lấy capabilities và abilities (nếu có)
+                    capabilities = meta.get('capabilities', {}) or {}
+                    abilities = meta.get('abilities', {}) or {}
+                    max_thinking_generation_length = meta.get('max_thinking_generation_length')
+
+                    # Gắn vào info.meta rút gọn để UI dùng
                     openai_models.append({
                         "id": model.get('id', 'qwen3-235b-a22b'),
                         "object": "model",
-                        "owned_by": "organization_owner"
+                        "owned_by": "organization_owner",
+                        "info": {
+                            "meta": {
+                                "max_context_length": max_context_length,
+                                "max_generation_length": gen_len,
+                                "max_thinking_generation_length": max_thinking_generation_length,
+                                "capabilities": capabilities,
+                                "abilities": abilities
+                            }
+                        }
                     })
                 self.models_cache = openai_models
                 return openai_models
@@ -50,7 +84,8 @@ class QwenService:
                 "timestamp": int(time.time() * 1000)
             }
             
-            response = requests.post(QWEN_NEW_CHAT_URL, headers=QWEN_HEADERS, json=chat_data)
+            headers = build_header(QWEN_HEADERS)
+            response = requests.post(QWEN_NEW_CHAT_URL, headers=headers, json=chat_data)
             
             if response.status_code == 200:
                 result = response.json()

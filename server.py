@@ -1,4 +1,4 @@
-from flask import Flask, request, Response, jsonify
+from flask import Flask, request, Response, jsonify, g
 from flask_cors import CORS
 import uuid
 import time
@@ -12,25 +12,29 @@ import sys
 # Import các module đã tách
 from utils.logging_config import setup_logging
 from utils.queue_manager import queue_manager
-from utils.terminal_ui import terminal_ui
+from utils.ui_manager import ui_manager
 from utils.chat_manager import chat_manager
 from services.qwen_service import qwen_service
 from services.chat_service import chat_service
 from services.ollama_service import ollama_service
 from models.request_state import RequestState
+from werkzeug.serving import make_server
+import threading
 
 # Parse command line arguments
 def parse_arguments():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(description='Custom Server with Qwen API Integration')
-    parser.add_argument('--background', action='store_true', 
+    parser.add_argument('--background', action='store_true',
                        help='Run server in background mode (no terminal output)')
-    parser.add_argument('--mode', choices=['lmstudio', 'ollama'], 
+    parser.add_argument('--mode', choices=['lmstudio', 'ollama'],
                        help='Server mode (lmstudio or ollama)')
-    parser.add_argument('--port', type=int, 
+    parser.add_argument('--port', type=int,
                        help='Server port (default: 1235 for lmstudio, 11434 for ollama)')
-    parser.add_argument('--host', default='0.0.0.0', 
+    parser.add_argument('--host', default='0.0.0.0',
                        help='Server host (default: 0.0.0.0)')
+    parser.add_argument('--start', action='store_true',
+                       help='Auto-start the server')
     return parser.parse_args()
 
 # Cấu hình Flask để trả về JSON đẹp
@@ -68,6 +72,27 @@ sys.setrecursionlimit(10000)  # Tăng recursion limit
 SERVER_MODE = None
 BACKGROUND_MODE = False
 args = None
+HTTP_SERVER = None
+HTTP_THREAD = None
+
+# Global models cache
+MODELS_CACHE = None
+MODELS_CACHE_TIME = None
+MODELS_CACHE_LOCK = threading.Lock()
+
+def get_cached_qwen_models(force_refresh: bool = False):
+    """Lấy danh sách models từ cache toàn cục; chỉ gọi Qwen 1 lần trừ khi refresh."""
+    global MODELS_CACHE, MODELS_CACHE_TIME
+    try:
+        with MODELS_CACHE_LOCK:
+            if MODELS_CACHE is None or force_refresh:
+                models = qwen_service.get_models_from_qwen()
+                MODELS_CACHE = models or []
+                MODELS_CACHE_TIME = int(time.time())
+            return MODELS_CACHE
+    except Exception as e:
+        logger.error(f"Error getting cached models: {e}")
+        return MODELS_CACHE or []
 
 # Parse arguments first
 args = parse_arguments()
@@ -114,35 +139,156 @@ def setup_logging_with_background():
 
 logger = setup_logging_with_background()
 
+def _ui_log(message: str, level: str = "info"):
+    """Log ra logger và cố gắng đẩy vào GUI Logs tab nếu khả dụng."""
+    try:
+        # Ghi ra file/console theo level
+        if level == "error":
+            logger.error(message)
+        elif level == "warning":
+            logger.warning(message)
+        else:
+            logger.info(message)
+
+        # Đẩy vào UI nếu có
+        try:
+            ui = getattr(ui_manager, 'current_ui', None)
+            if ui and hasattr(ui, 'log'):
+                ui.log(message, level=level)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+# Embedded server control for GUI
+def start_embedded(host: str, port: int):
+    """Start Flask app using Werkzeug make_server in background thread."""
+    global HTTP_SERVER, HTTP_THREAD
+    try:
+        if HTTP_SERVER is not None:
+            return True
+        HTTP_SERVER = make_server(host, port, app)
+        import threading
+        HTTP_THREAD = threading.Thread(target=HTTP_SERVER.serve_forever, daemon=True)
+        HTTP_THREAD.start()
+        _ui_log(f"🟢 Flask started (embedded) on {host}:{port}")
+        return True
+    except Exception as e:
+        HTTP_SERVER = None
+        HTTP_THREAD = None
+        _ui_log(f"Failed to start embedded server: {e}", level="error")
+        return False
+
+def stop_embedded(timeout: float = 2.0):
+    """Stop embedded Werkzeug server without exiting the process."""
+    global HTTP_SERVER, HTTP_THREAD
+    try:
+        srv, th = HTTP_SERVER, HTTP_THREAD
+        HTTP_SERVER = None
+        HTTP_THREAD = None
+        if srv is not None:
+            try:
+                srv.shutdown()
+            except Exception:
+                pass
+        if th is not None and th.is_alive():
+            try:
+                th.join(timeout)
+            except Exception:
+                pass
+        _ui_log("🔴 Flask stopped (embedded)")
+        return True
+    except Exception as e:
+        _ui_log(f"Failed to stop embedded server: {e}", level="error")
+        return False
+
 # Override để bỏ qua kiểm tra Content-Type
 @app.before_request
 def before_request():
     """Override để xử lý request không có Content-Type"""
+    # Log request cơ bản và đánh dấu thời điểm bắt đầu
+    try:
+        g._req_start_time = time.time()
+        qs = ''
+        try:
+            qs = request.query_string.decode('utf-8', 'ignore')
+        except Exception:
+            qs = ''
+        _ui_log(f"➡️  {request.method} {request.path} | ip={request.remote_addr} | qs={qs}", level="info")
+    except Exception:
+        pass
+
     if request.method == 'POST' and request.path.startswith('/api/'):
         # Nếu là POST request đến Ollama API và không có Content-Type
         if not request.content_type or 'application/json' not in request.content_type:
             # Set Content-Type để Flask không báo lỗi
             request.environ['CONTENT_TYPE'] = 'application/json'
 
+@app.after_request
+def after_request(response):
+    """Log status và thời gian xử lý cho mọi request"""
+    try:
+        start = getattr(g, '_req_start_time', None)
+        elapsed_ms = int((time.time() - start) * 1000) if start else -1
+    except Exception:
+        pass
+    return response
+
 @app.route('/', methods=['GET'])
 def root():
     """Root endpoint"""
     route_info = "GET / - Root"
-    terminal_ui.update_route(route_info)
-    
-    return "Ollama is running"
+    ui_manager.update_route(route_info)
+    if SERVER_MODE == "ollama":
+        return "Ollama is running"
+    else:
+        return "LM Studio is running"
 
 @app.route('/', methods=['OPTIONS'])
 def root_options():
     """OPTIONS for root endpoint"""
     route_info = "OPTIONS / - Root"
-    terminal_ui.update_route(route_info)
+    ui_manager.update_route(route_info)
     
     response = Response()
     response.headers['Access-Control-Allow-Origin'] = '*'
     response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
     return response
+
+@app.route('/__shutdown', methods=['POST'])
+def shutdown():
+    """Shutdown server with robust fallback (works even without werkzeug handle)."""
+    try:
+        route_info = "POST /__shutdown - Shutdown"
+        ui_manager.update_route(route_info)
+
+        # Try werkzeug shutdown first
+        func = request.environ.get('werkzeug.server.shutdown')
+        if func is not None:
+            try:
+                func()
+                return jsonify({"status": "shutting down"})
+            except Exception as e:
+                logger.warning(f"Werkzeug shutdown failed: {e}")
+
+        # Fallback: hard-exit the process shortly after responding
+        try:
+            import threading, os, time as _time
+            def _delayed_exit():
+                try:
+                    _time.sleep(0.2)
+                finally:
+                    os._exit(0)
+            threading.Thread(target=_delayed_exit, daemon=True).start()
+            return jsonify({"status": "shutting down (fallback)"})
+        except Exception as e:
+            logger.error(f"Fallback shutdown failed: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    except Exception as e:
+        logger.error(f"Shutdown error: {e}")
+        return jsonify({"error": str(e)}), 500
 
 def parse_tools_to_text(tools):
     """Parse tools thành text format"""
@@ -185,6 +331,22 @@ def parse_tools_to_text(tools):
             tools_text += "\n"
     
     return tools_text
+
+def _make_display_data_short(data, max_len: int = 200):
+    """Tạo bản sao rút gọn data chỉ để hiển thị trong UI, không ảnh hưởng dữ liệu gốc."""
+    try:
+        display_data = data.copy() if data else {}
+        # Truncate long messages for display
+        if 'messages' in display_data and isinstance(display_data['messages'], list):
+            for msg in display_data['messages']:
+                if isinstance(msg, dict) and 'content' in msg:
+                    content = msg['content']
+                    if isinstance(content, str) and len(content) > max_len:
+                        msg['content'] = content[:max_len] + "..."
+        return display_data
+    except Exception:
+        # Nếu có lỗi, trả về data gốc để tránh chặn log
+        return data
 
 def parse_json_request():
     """Decorator để parse JSON request không cần Content-Type"""
@@ -277,7 +439,7 @@ def list_models():
     """List the currently loaded models"""
     if request.method == 'OPTIONS':
         route_info = "OPTIONS /v1/models - List Models"
-        terminal_ui.update_route(route_info)
+        ui_manager.update_route(route_info)
         
         response = Response()
         response.headers['Access-Control-Allow-Origin'] = '*'
@@ -286,9 +448,9 @@ def list_models():
         return response
     
     route_info = "GET /v1/models - List Models"
-    terminal_ui.update_route(route_info)
+    ui_manager.update_route(route_info)
     
-    models = qwen_service.get_models_from_qwen()
+    models = get_cached_qwen_models()
     
     if SERVER_MODE == "ollama":
         # Convert to Ollama format
@@ -315,6 +477,8 @@ def list_models():
     response.headers['Content-Type'] = 'application/json'
     return response
 
+
+
 @app.route('/v1/models/<model_id>', methods=['GET'])
 def get_model(model_id):
     """Get specific model information"""
@@ -322,11 +486,11 @@ def get_model(model_id):
         return jsonify({"error": "Endpoint not available in current mode"}), 404
         
     route_info = f"GET /v1/models/{model_id} - Get Model Info"
-    terminal_ui.update_route(route_info)
+    ui_manager.update_route(route_info)
     
     try:
         # Lấy thông tin model từ Qwen API
-        qwen_models = qwen_service.get_models_from_qwen()
+        qwen_models = get_cached_qwen_models()
         
         # Tìm model cụ thể
         target_model = None
@@ -425,14 +589,16 @@ def chat_completions():
     data = request.get_json()
     stream = data.get('stream', False)
     model = data.get('model', 'qwen3-235b-a22b')
-    
+
     # Remove :latest suffix for Ollama mode
     if SERVER_MODE == "ollama" and model.endswith(':latest'):
         model = model[:-7]  # Remove :latest
         data['model'] = model  # Update the model in data
-    
+
     route_info = f"POST /v1/chat/completions - Chat ({model}, stream: {stream})"
-    terminal_ui.update_route(route_info)
+
+    # Log route với bản sao rút gọn để hiển thị, không ảnh hưởng dữ liệu gốc
+    ui_manager.update_route(route_info, _make_display_data_short(data))
     
     if stream:
         return Response(
@@ -456,10 +622,10 @@ def ollama_list_models():
         return jsonify({"error": "Endpoint not available in current mode"}), 404
         
     route_info = "GET /api/tags - Ollama List Models"
-    terminal_ui.update_route(route_info)
+    ui_manager.update_route(route_info)
     
     try:
-        qwen_models = qwen_service.get_models_from_qwen()
+        qwen_models = get_cached_qwen_models()
         
         # Convert Qwen models to Ollama format
         ollama_models = []
@@ -502,7 +668,7 @@ def ollama_version():
         return jsonify({"error": "Endpoint not available in current mode"}), 404
         
     route_info = "GET /api/version - Ollama Version"
-    terminal_ui.update_route(route_info)
+    ui_manager.update_route(route_info)
     
     return jsonify({"version": "0.5.11"})
 
@@ -513,11 +679,11 @@ def ollama_list_running_models():
         return jsonify({"error": "Endpoint not available in current mode"}), 404
         
     route_info = "GET /api/ps - Ollama List Running Models"
-    terminal_ui.update_route(route_info)
+    ui_manager.update_route(route_info)
     
     try:
         # Lấy tất cả models từ Qwen API (vì tất cả đều đang chạy theo mặc định)
-        qwen_models = qwen_service.get_models_from_qwen()
+        qwen_models = get_cached_qwen_models()
         
         # Convert Qwen models to Ollama running format
         from datetime import datetime, timedelta
@@ -564,12 +730,15 @@ def ollama_show_model():
         
     data = request.json_data
     model_name = data.get('name', '')
+    # Bỏ suffix :latest nếu có
+    if model_name.endswith(':latest'):
+        model_name = model_name[:-7]
     
     route_info = f"POST /api/show - Ollama Show Model ({model_name})"
-    terminal_ui.update_route(route_info)
+    ui_manager.update_route(route_info, _make_display_data_short(data))
     
     try:
-        qwen_models = qwen_service.get_models_from_qwen()
+        qwen_models = get_cached_qwen_models()
         
         # Find the specific model
         target_model = None
@@ -623,7 +792,8 @@ def ollama_generate():
         model = model[:-7]  # Bỏ :latest
     
     route_info = f"POST /api/generate - Ollama Generate ({model}, stream: {stream})"
-    terminal_ui.update_route(route_info)
+
+    ui_manager.update_route(route_info, _make_display_data_short(data))
     
     # Convert Ollama format to OpenAI format
     openai_data = {
@@ -666,7 +836,8 @@ def ollama_chat():
         model = model[:-7]  # Bỏ :latest
     
     route_info = f"POST /api/chat - Ollama Chat ({model}, stream: {stream})"
-    terminal_ui.update_route(route_info)
+
+    ui_manager.update_route(route_info, _make_display_data_short(data))
     
     # Parse tools thành text nếu có
     if tools:
@@ -713,6 +884,14 @@ def stream_qwen_response_with_queue(data):
         # Tạo request state cho request này
         request_state = RequestState(request_id, model)
         
+        # Update queue status: processing started, queue size from manager
+        try:
+            from utils.ui_manager import ui_manager as _ui
+            status = queue_manager.get_status()
+            _ui.update_queue_status(True, status.get('queue_size', 0))
+        except Exception:
+            pass
+
         # Xử lý request hiện tại
         for chunk in chat_service.stream_qwen_response(data, request_state):
             yield chunk
@@ -723,6 +902,13 @@ def stream_qwen_response_with_queue(data):
     finally:
         # Đảm bảo lock được release
         queue_manager.release_lock(request_id)
+        # Update queue status: processing stopped
+        try:
+            from utils.ui_manager import ui_manager as _ui
+            status = queue_manager.get_status()
+            _ui.update_queue_status(False, status.get('queue_size', 0))
+        except Exception:
+            pass
 
 def stream_qwen_response_non_streaming_with_queue(data):
     """Non-streaming response from Qwen API with queue system"""
@@ -742,6 +928,13 @@ def stream_qwen_response_non_streaming_with_queue(data):
         else:
             queue_manager.current_processing = True
             queue_manager.current_processing_start_time = time.time()
+            # Update UI queue status
+            try:
+                from utils.ui_manager import ui_manager as _ui
+                status = queue_manager.get_status()
+                _ui.update_queue_status(True, status.get('queue_size', 0))
+            except Exception:
+                pass
     
     try:
         # Xử lý request hiện tại
@@ -762,6 +955,13 @@ def stream_qwen_response_non_streaming_with_queue(data):
     finally:
         # Đảm bảo lock được release
         queue_manager.release_lock(request_id)
+        # Update UI queue status
+        try:
+            from utils.ui_manager import ui_manager as _ui
+            status = queue_manager.get_status()
+            _ui.update_queue_status(False, status.get('queue_size', 0))
+        except Exception:
+            pass
 
 
 
@@ -770,7 +970,7 @@ def internal_error(error):
     """Handle internal server errors and release lock"""
     route_info = "ERROR 500 - Internal Server Error"
     logger.error(f"ROUTE: {route_info}")
-    terminal_ui.update_route(route_info)
+    ui_manager.update_route(route_info)
     
     logger.error(f"Internal server error: {error}")
     queue_manager.release_lock("error_handler")
@@ -784,8 +984,9 @@ def internal_error(error):
 @app.route('/v1/completions', methods=['POST'])
 def completions():
     """Text completions (deprecated)"""
+    data = request.get_json() or {}
     route_info = "POST /v1/completions - Deprecated"
-    terminal_ui.update_route(route_info)
+    ui_manager.update_route(route_info, data)
     
     return jsonify({
         "error": {
@@ -798,8 +999,9 @@ def completions():
 @app.route('/v1/embeddings', methods=['POST'])
 def embeddings():
     """Text embeddings"""
+    data = request.get_json() or {}
     route_info = "POST /v1/embeddings - Not Supported"
-    terminal_ui.update_route(route_info)
+    ui_manager.update_route(route_info, data)
     
     return jsonify({
         "error": {
@@ -810,91 +1012,51 @@ def embeddings():
     }), 400
 
 if __name__ == '__main__':
-    # Hỏi mode trước khi start
-    port = ask_server_mode()
+    # Parse arguments first
+    args = parse_arguments()
     
-    # Sử dụng port từ argument nếu có
-    if args.port:
-        port = args.port
+    # Set background mode if specified
+    if args.background:
+        BACKGROUND_MODE = True
     
-    # Lấy IP address
-    hostname = socket.gethostname()
-    local_ip = socket.gethostbyname(hostname)
-    
-    # Cập nhật thông tin server cho terminal UI (chỉ khi không ở background mode)
+    # Only GUI UI supported; exit if cannot initialize
     if not BACKGROUND_MODE:
-        terminal_ui.update_server_info(SERVER_MODE, port)
-    
-    # Startup logs
-    logger.info(f"Success! HTTP server listening on port {port}")
-    logger.warning("Server accepting connections from the local network. Only use this if you know what you are doing!")
-    logger.info("")
-    
-    if SERVER_MODE == "lmstudio":
-        logger.info("LM Studio Mode - Supported endpoints:")
-        logger.info(f"->\tGET  http://{local_ip}:{port}/v1/models")
-        logger.info(f"->\tGET  http://{local_ip}:{port}/v1/models/{{model_id}}")
-        logger.info(f"->\tPOST http://{local_ip}:{port}/v1/chat/completions")
-        logger.info(f"->\tPOST http://{local_ip}:{port}/v1/completions")
-        logger.info(f"->\tPOST http://{local_ip}:{port}/v1/embeddings")
-    else:  # ollama mode
-        logger.info("Ollama Mode - Supported endpoints:")
-        logger.info(f"->\tGET  http://{local_ip}:{port}/api/version")
-        logger.info(f"->\tGET  http://{local_ip}:{port}/api/tags")
-        logger.info(f"->\tGET  http://{local_ip}:{port}/api/ps")
-        logger.info(f"->\tPOST http://{local_ip}:{port}/api/show")
-        logger.info(f"->\tPOST http://{local_ip}:{port}/api/generate")
-        logger.info(f"->\tPOST http://{local_ip}:{port}/api/chat")
-    
-    logger.info("")
-    logger.info("Custom server with Qwen API integration")
-    logger.info("Queue system enabled - requests will be queued if server is busy")
-    logger.info("Think mode support enabled - <think> and </think> tags for Qwen thinking phase")
-    logger.info("Lock timeout: 2 minutes, Request timeout: 60 seconds")
-    logger.info("Server started.")
-    logger.info("Just-in-time model loading active.")
-    
-    # Khởi tạo chat_id khi server bắt đầu
-    logger.info("Initializing chat session...")
-    chat_id = chat_manager.initialize_chat()
-    if chat_id:
-        logger.info(f"Chat initialized with ID: {chat_id}")
-        if not BACKGROUND_MODE:
-            terminal_ui.update_chat_id(chat_id)
-            terminal_ui.update_parent_id(None)  # Reset parent_id khi khởi tạo
-    else:
-        logger.error("Failed to initialize chat")
-    
-    # Bắt đầu terminal UI (chỉ khi không ở background mode)
-    if not BACKGROUND_MODE:
-        terminal_ui.start()
-    
-    try:
-        # Cấu hình Werkzeug để chấp nhận header rất dài
-        from werkzeug.serving import WSGIRequestHandler
-        WSGIRequestHandler.max_requestline = 2048 * 1024 * 1024  # 2GB
-        WSGIRequestHandler.max_header_size = 2048 * 1024 * 1024  # 2GB
-        
-        # Cấu hình thêm cho Werkzeug
-        import werkzeug
-        werkzeug.serving.WSGIRequestHandler.max_requestline = 2048 * 1024 * 1024
-        werkzeug.serving.WSGIRequestHandler.max_header_size = 2048 * 1024 * 1024
-        
-        # Tắt giới hạn request size
-        werkzeug.serving.WSGIRequestHandler.max_requestline = None
-        werkzeug.serving.WSGIRequestHandler.max_header_size = None
-        
-        # Tăng buffer size cho socket
-        import socket
-        socket.SOMAXCONN = 1024
-        
-        # Tăng buffer size cho request
-        import os
-        os.environ['FLASK_MAX_CONTENT_LENGTH'] = str(2048 * 1024 * 1024)  # 2GB
-        os.environ['FLASK_MAX_CONTENT_LENGTH'] = '0'  # Không giới hạn
-        
-        app.run(host=args.host, port=port, debug=False, threaded=True, processes=1)
-    except KeyboardInterrupt:
-        print("\n🛑 Server stopped by user")
-    finally:
-        terminal_ui.stop()
+        try:
+            from utils.gui_ui import gui_ui
+            if not gui_ui.is_display_available():
+                logger.error("DISPLAY not available. GUI UI is required. Exiting.")
+                raise SystemExit(1)
+
+            # Set mode and port if specified in args
+            if args.mode:
+                port = 1235 if args.mode == "lmstudio" else 11434
+                gui_ui.mode = args.mode
+                gui_ui.port = port
+            elif args.port:
+                # Determine mode from port
+                mode = "lmstudio" if args.port == 1235 else "ollama" if args.port == 11434 else None
+                if mode:
+                    gui_ui.mode = mode
+                    gui_ui.port = args.port
+
+            # Initialize GUI but don't start it yet
+            if gui_ui.initialize():
+                logger.info("GUI UI initialized successfully")
+
+                # Register GUI with UI manager
+                ui_manager.set_ui(gui_ui, 'gui')
+
+                # Auto-start server if requested
+                if args.start:
+                    gui_ui._start_server()
+
+                # Start GUI in main thread (this will block)
+                gui_ui.run_main_loop()
+            else:
+                logger.error("Failed to initialize GUI UI. Exiting.")
+                raise SystemExit(1)
+        except SystemExit:
+            raise
+        except Exception as e:
+            logger.error(f"Error initializing GUI: {e}")
+            raise SystemExit(1)

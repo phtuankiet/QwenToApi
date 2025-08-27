@@ -5,8 +5,10 @@ import requests
 import logging
 from models.request_state import RequestState
 from services.qwen_service import qwen_service
+from utils.ui_manager import ui_manager
 from utils.chat_manager import chat_manager
 from config import QWEN_HEADERS, QWEN_CHAT_COMPLETIONS_URL
+from utils.cookie_parser import build_header
 
 logger = logging.getLogger(__name__)
 
@@ -51,9 +53,12 @@ class ChatService:
             
             
             # Gửi request đến Qwen API
+            # Build headers with cookie from settings
+            headers = build_header(QWEN_HEADERS)
+
             response = requests.post(
                 f"{QWEN_CHAT_COMPLETIONS_URL}?chat_id={chat_id}",
-                headers=QWEN_HEADERS,
+                headers=headers,
                 json=qwen_data,
                 stream=True,
                 timeout=300  # 5 phút timeout
@@ -139,6 +144,14 @@ class ChatService:
     def _process_qwen_stream_response(self, response, model, request_state):
         """Xử lý response streaming từ Qwen API"""
         chunk_count = 0
+        # Thu thập nội dung assistant để đẩy vào Chat tab khi kết thúc
+        collected_answer = []
+        last_user_text = ""
+        try:
+            # Thử lấy user message cuối cùng từ request_state hoặc dữ liệu lưu cục bộ (không có: để server trích sau)
+            pass
+        except Exception:
+            pass
         
         # Xử lý response content dựa trên encoding
         content_encoding = response.headers.get('content-encoding', '').lower()
@@ -225,6 +238,12 @@ class ChatService:
                                                             "finish_reason": finish_reason
                                                         }]
                                                     }
+                                                    # Thu thập content để hiển thị sau
+                                                    try:
+                                                        if 'content' in delta and isinstance(delta['content'], str):
+                                                            collected_answer.append(delta['content'])
+                                                    except Exception:
+                                                        pass
                                                     yield f"data: {json.dumps(openai_format)}\n\n"
                                                 
                                                 # Nếu think mode kết thúc (status finished)
@@ -243,6 +262,12 @@ class ChatService:
                                                             "finish_reason": None
                                                         }]
                                                     }
+                                                    # Thu thập content để hiển thị sau
+                                                    try:
+                                                        if 'content' in delta and isinstance(delta['content'], str):
+                                                            collected_answer.append(delta['content'])
+                                                    except Exception:
+                                                        pass
                                                     yield f"data: {json.dumps(openai_format)}\n\n"
                                                     # Reset think state
                                                     request_state.think_started = False
@@ -267,6 +292,19 @@ class ChatService:
                                             
                                             # Nếu có finish_reason, gửi [DONE] message
                                             if finish_reason:
+                                                # Khi kết thúc, đẩy lịch sử chat vào UI (user + full assistant)
+                                                try:
+                                                    full_answer = ''.join(collected_answer)
+                                                    # Lấy user text cuối cùng từ chat_manager (nếu có)
+                                                    try:
+                                                        from utils.chat_manager import chat_manager as _cm
+                                                        # Không có API lấy user message; fallback: để trống, client hiển thị vẫn OK
+                                                        last_user_text = last_user_text or ""
+                                                    except Exception:
+                                                        last_user_text = last_user_text or ""
+                                                    ui_manager.add_chat_messages(last_user_text, full_answer)
+                                                except Exception:
+                                                    pass
                                                 yield "data: [DONE]\n\n"
                                                 return
                                         else:
@@ -337,6 +375,12 @@ class ChatService:
                                             yield f"data: {json.dumps(openai_format)}\n\n"
                                         
                                         if finish_reason:
+                                            try:
+                                                full_answer = ''.join(collected_answer)
+                                                last_user_text = last_user_text or ""
+                                                ui_manager.add_chat_messages(last_user_text, full_answer)
+                                            except Exception:
+                                                pass
                                             yield "data: [DONE]\n\n"
                                             return
                                 except json.JSONDecodeError as e:
@@ -404,9 +448,11 @@ class ChatService:
             qwen_data = qwen_service.prepare_qwen_request(data, chat_id, model, parent_id)
             
             # Gửi request đến Qwen API
+            headers = build_header(QWEN_HEADERS)
+
             response = requests.post(
                 f"{QWEN_CHAT_COMPLETIONS_URL}?chat_id={chat_id}",
-                headers=QWEN_HEADERS,
+                headers=headers,
                 json=qwen_data,
                 timeout=300  # 5 phút timeout
             )
@@ -484,7 +530,20 @@ class ChatService:
                 logger.error(f"Error reading response content: {e}")
             
             if response.status_code == 200:
-                return self._process_qwen_non_streaming_response(response, model)
+                result = self._process_qwen_non_streaming_response(response, model)
+                try:
+                    # Extract user message and assistant full content for chat history
+                    user_text = ""
+                    msgs = data.get('messages') or []
+                    for m in reversed(msgs):
+                        if isinstance(m, dict) and m.get('role') == 'user':
+                            user_text = str(m.get('content') or '')
+                            break
+                    assistant_text = result.get('choices', [{}])[0].get('message', {}).get('content', '')
+                    ui_manager.add_chat_messages(user_text, assistant_text)
+                except Exception:
+                    pass
+                return result
             else:
                 return {
                     "error": {

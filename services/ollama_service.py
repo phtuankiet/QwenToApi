@@ -7,7 +7,9 @@ from datetime import datetime
 from models.request_state import RequestState
 from services.qwen_service import qwen_service
 from utils.chat_manager import chat_manager
+from utils.ui_manager import ui_manager
 from config import QWEN_HEADERS, QWEN_CHAT_COMPLETIONS_URL
+from utils.cookie_parser import build_header
 
 logger = logging.getLogger(__name__)
 
@@ -50,9 +52,11 @@ class OllamaService:
             qwen_data = qwen_service.prepare_qwen_request(data, chat_id, model)
             
             # Gọi Qwen API với streaming
+            headers = build_header(QWEN_HEADERS)
+
             response = requests.post(
                 f"{QWEN_CHAT_COMPLETIONS_URL}?chat_id={chat_id}",
-                headers=QWEN_HEADERS,
+                headers=headers,
                 json=qwen_data,
                 stream=True,
                 timeout=300
@@ -82,7 +86,7 @@ class OllamaService:
                                     
                                     retry_response = requests.post(
                                         f"{QWEN_CHAT_COMPLETIONS_URL}?chat_id={new_chat_id}",
-                                        headers=QWEN_HEADERS,
+                                        headers=headers,
                                         json=qwen_data,
                                         stream=True,
                                         timeout=300
@@ -128,6 +132,9 @@ class OllamaService:
             
             if response.status_code == 200:
                 done_sent = False
+                # Thu thập nội dung assistant để hiển thị vào Chat khi DONE
+                collected_answer = []
+                last_user_text = ""
                 for line in response.iter_lines():
                     if line:
                         line_str = line.decode('utf-8')
@@ -218,6 +225,11 @@ class OllamaService:
                                                 },
                                                 "done": False
                                             }
+                                            # Thu thập content
+                                            try:
+                                                collected_answer.append(content)
+                                            except Exception:
+                                                pass
                                             output_token_count += max(1, len(content.strip().split()))
                                             yield json.dumps(ollama_chunk) + "\n"
                                     
@@ -243,6 +255,21 @@ class OllamaService:
                                             "eval_count": int(output_token_count),
                                             "eval_duration": int(eval_duration)
                                         }
+                                        # Đẩy lịch sử chat vào UI
+                                        try:
+                                            full_answer = ''.join(collected_answer)
+                                            # Trích user text cuối cùng từ data
+                                            try:
+                                                msgs = data.get('messages') or []
+                                                for m in reversed(msgs):
+                                                    if isinstance(m, dict) and m.get('role') == 'user':
+                                                        last_user_text = str(m.get('content') or '')
+                                                        break
+                                            except Exception:
+                                                last_user_text = last_user_text or ""
+                                            ui_manager.add_chat_messages(last_user_text, full_answer)
+                                        except Exception:
+                                            pass
                                         yield json.dumps(final_chunk) + "\n"
                                         done_sent = True
                                         break
@@ -272,6 +299,20 @@ class OllamaService:
                                 "eval_count": int(output_token_count),
                                 "eval_duration": int(eval_duration)
                             }
+                            try:
+                                full_answer = ''.join(collected_answer)
+                                # Trích user text cuối cùng từ data
+                                try:
+                                    msgs = data.get('messages') or []
+                                    for m in reversed(msgs):
+                                        if isinstance(m, dict) and m.get('role') == 'user':
+                                            last_user_text = str(m.get('content') or '')
+                                            break
+                                except Exception:
+                                    last_user_text = last_user_text or ""
+                                ui_manager.add_chat_messages(last_user_text, full_answer)
+                            except Exception:
+                                pass
                             yield json.dumps(final_chunk) + "\n"
                             done_sent = True
                             break
@@ -348,9 +389,10 @@ class OllamaService:
             qwen_data['incremental_output'] = True
                         
             # Gọi Qwen API với streaming để capture toàn bộ content
+            headers = build_header(QWEN_HEADERS)
             response = requests.post(
                 f"{QWEN_CHAT_COMPLETIONS_URL}?chat_id={chat_id}",
-                headers=QWEN_HEADERS,
+                headers=headers,
                 json=qwen_data,
                 stream=True,
                 timeout=300
@@ -380,7 +422,7 @@ class OllamaService:
                                     
                                     retry_response = requests.post(
                                         f"{QWEN_CHAT_COMPLETIONS_URL}?chat_id={new_chat_id}",
-                                        headers=QWEN_HEADERS,
+                                        headers=headers,
                                         json=qwen_data,
                                         stream=True,
                                         timeout=300
@@ -495,6 +537,18 @@ class OllamaService:
                 if thinking:
                     ollama_response["message"]["content"] = f"<think>{thinking}</think>\n\n{content}"
                 
+                # Push to chat history (only user request and full response content)
+                try:
+                    user_text = ""
+                    msgs = data.get('messages') or []
+                    for m in reversed(msgs):
+                        if isinstance(m, dict) and m.get('role') == 'user':
+                            user_text = str(m.get('content') or '')
+                            break
+                    assistant_text = ollama_response.get('message', {}).get('content', '')
+                    ui_manager.add_chat_messages(user_text, assistant_text)
+                except Exception:
+                    pass
                 return ollama_response
             else:
                 logger.error(f"Invalid response format: {response}")

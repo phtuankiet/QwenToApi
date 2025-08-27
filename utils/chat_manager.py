@@ -39,12 +39,12 @@ class ChatManager:
         self.current_parent_id = parent_id
         self.current_response_id = response_id
         
-        # Cập nhật terminal UI
+        # Cập nhật UI
         try:
-            from utils.terminal_ui import terminal_ui
-            terminal_ui.update_parent_id(parent_id)
+            from utils.ui_manager import ui_manager
+            ui_manager.update_parent_id(parent_id)
         except Exception as e:
-            logger.error(f"Error updating terminal UI: {e}")
+            logger.error(f"Error updating UI: {e}")
     
     def create_new_chat(self, model=None):
         """Tạo chat mới và cập nhật chat_id hiện tại"""
