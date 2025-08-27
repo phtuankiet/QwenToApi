@@ -1449,7 +1449,7 @@ Escape    - Close popup windows
             y = parent_y + (parent_height - popup_height) // 2
 
             model_window.geometry(f"{popup_width}x{popup_height}+{x}+{y}")
-            model_window.resizable(False, False)
+            model_window.resizable(True, True)
             model_window.minsize(700, 400)
 
             # Configure popup grid
