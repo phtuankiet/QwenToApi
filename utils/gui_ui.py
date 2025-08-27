@@ -1353,12 +1353,12 @@ Escape    - Close popup windows
             try:
                 logger.info(f"Starting server on {self.ip_address}:{self.port} in {self.mode} mode")
                 # Import server components here to avoid circular imports
-                import server
-                from server import app, chat_manager
+                import main
+                from main import app, chat_manager
                 
                 # Set server mode directly on server module to avoid desync
                 try:
-                    server.SERVER_MODE = self.mode
+                    main.SERVER_MODE = self.mode
                 except Exception:
                     pass
                 
@@ -1369,7 +1369,7 @@ Escape    - Close popup windows
                     self.update_parent_id(None)
                 
                 # Run embedded Flask app (controllable stop)
-                started = server.start_embedded(self.ip_address, self.port)
+                started = main.start_embedded(self.ip_address, self.port)
                 if not started:
                     raise RuntimeError("Failed to start embedded server")
             except Exception as e:
@@ -1396,7 +1396,7 @@ Escape    - Close popup windows
 
         # Dừng Flask embedded mà không thoát app
         try:
-            import server as _server
+            import main as _server
             _server.stop_embedded()
         except Exception as e:
             logger.warning(f"Embedded stop error: {e}")
@@ -2282,7 +2282,7 @@ Use the Settings tab to configure the server mode.
             from services.qwen_service import qwen_service
             
             # Force refresh by calling get_models_from_qwen with force refresh
-            # We need to access the global cache in server.py
+            # We need to access the global cache in main.py
             import sys
             import os
             

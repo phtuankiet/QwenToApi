@@ -1,0 +1,3 @@
+python3.11 -m nuitka main.py --follow-imports --windows-file-version=1.0.0.0 --windows-company-name=QwenToApi --standalone --onefile --include-module=re --include-module=ctypes --include-module=requests --include-module=json --include-module=logging --include-module=random --include-module=os --include-module=traceback --include-module=threading --include-module=socket --include-module=shutil --include-module=chardet  --include-module=base64 --include-module=lzma --include-module=gzip --include-module=urllib3 --include-module=datetime --include-module=hashlib --include-module=pathlib --include-module=subprocess --include-module=signal --enable-plugin=tk-inter --windows-disable-console 
+
+pause
