@@ -16,8 +16,4 @@ class RequestState:
     def log_phase_change(self, phase):
         """Log khi phase thay đổi"""
         if phase and self.current_phase != phase:
-            if self.current_phase is None:
-                logger.info(f"Request {self.request_id} phase: {phase}")
-            else:
-                logger.info(f"Request {self.request_id} phase changed from {self.current_phase} to {phase}")
             self.current_phase = phase

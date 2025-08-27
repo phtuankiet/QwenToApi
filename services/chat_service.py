@@ -32,37 +32,25 @@ class ChatService:
         if request_state is None:
             request_id = str(uuid.uuid4())
             request_state = RequestState(request_id, model)
-        
-        logger.info(f"Stream function called with model: {model}, request_id: {request_state.request_id}")
-        
+                
         try:
             # Sử dụng chat_id hiện tại hoặc tạo mới nếu chưa có
             chat_id = chat_manager.get_current_chat_id()
             if not chat_id:
-                logger.info("No current chat_id, creating new chat...")
                 chat_id = chat_manager.initialize_chat(model)
                 if not chat_id:
                     logger.error("Failed to create new chat")
                     yield f"data: {json.dumps({'error': 'Failed to create new chat'})}\n\n"
                     return
-                logger.info(f"Created new chat with ID: {chat_id}")
-            else:
-                logger.info(f"Using existing chat ID: {chat_id}")
             
             # Lấy parent_id hiện tại
             parent_id = chat_manager.get_current_parent_id()
-            logger.info(f"Using parent_id: {parent_id}")
             
             # Chuẩn bị request cho Qwen API
             qwen_data = qwen_service.prepare_qwen_request(data, chat_id, model, parent_id)
             
-            logger.info(f"Final Qwen request with 1 message")
             
             # Gửi request đến Qwen API
-            logger.info(f"Sending request to Qwen API: {QWEN_CHAT_COMPLETIONS_URL}?chat_id={chat_id}")
-            logger.info(f"Request messages count: {len(qwen_data.get('messages', []))}")
-            if qwen_data.get('messages'):
-                logger.info(f"First message content length: {len(qwen_data['messages'][0].get('content', ''))}")
             response = requests.post(
                 f"{QWEN_CHAT_COMPLETIONS_URL}?chat_id={chat_id}",
                 headers=QWEN_HEADERS,
@@ -70,9 +58,7 @@ class ChatService:
                 stream=True,
                 timeout=300  # 5 phút timeout
             )
-            
-            logger.info(f"Qwen API response status: {response.status_code}")
-            
+                        
             # Kiểm tra response content trước khi xử lý
             try:
                 # Chỉ log response headers và status, không log content vì có thể là binary/compressed            
@@ -81,7 +67,6 @@ class ChatService:
                 if 'application/json' in content_type:
                     try:
                         response_json = response.json()
-                        logger.info(f"Qwen API JSON response: {response_json}")
                         
                         if not response_json.get('success', True):
                             error_code = response_json.get('data', {}).get('code', 'Unknown')
@@ -93,16 +78,13 @@ class ChatService:
                             elif error_code == "Bad_Request" and "parent_id" in error_details and "not exist" in error_details:
                                 # Xử lý lỗi parent_id không tồn tại
                                 logger.warning(f"Parent ID not exist error detected: {error_details}")
-                                logger.info("Creating new chat and resetting parent_id...")
                                 
                                 # Tạo chat mới và reset parent_id
                                 new_chat_id = chat_manager.create_new_chat(model)
                                 if new_chat_id:
-                                    logger.info(f"New chat created with ID: {new_chat_id}")
                                     # Gửi lại request với parent_id = None
                                     qwen_data = qwen_service.prepare_qwen_request(data, new_chat_id, model, None)
                                     
-                                    logger.info(f"Retrying request with new chat_id: {new_chat_id} and parent_id: None")
                                     retry_response = requests.post(
                                         f"{QWEN_CHAT_COMPLETIONS_URL}?chat_id={new_chat_id}",
                                         headers=QWEN_HEADERS,
@@ -112,7 +94,6 @@ class ChatService:
                                     )
                                     
                                     if retry_response.status_code == 200:
-                                        logger.info("Retry successful, continuing with new chat...")
                                         # Tiếp tục xử lý response từ retry
                                         response = retry_response
                                         # Tiếp tục xử lý response bình thường
@@ -157,12 +138,10 @@ class ChatService:
     
     def _process_qwen_stream_response(self, response, model, request_state):
         """Xử lý response streaming từ Qwen API"""
-        logger.info("Starting to stream response from Qwen API...")
         chunk_count = 0
         
         # Xử lý response content dựa trên encoding
         content_encoding = response.headers.get('content-encoding', '').lower()
-        logger.info(f"Response content-encoding: {content_encoding}")
         
         if content_encoding == 'br':
             # Brotli compression - xử lý streaming từng line riêng biệt
@@ -199,7 +178,6 @@ class ChatService:
                                             response_id = response_created.get('response_id')
                                             if parent_id and response_id:
                                                 chat_manager.update_parent_info(parent_id, response_id)
-                                                logger.info(f"Updated parent_id: {parent_id}, response_id: {response_id}")
                                             continue  # Bỏ qua chunk này, không gửi về client
                                         
                                         if 'choices' in qwen_data and len(qwen_data['choices']) > 0:
@@ -289,7 +267,6 @@ class ChatService:
                                             
                                             # Nếu có finish_reason, gửi [DONE] message
                                             if finish_reason:
-                                                logger.info(f"Received finish_reason: {finish_reason}, sending [DONE] and returning")
                                                 yield "data: [DONE]\n\n"
                                                 return
                                         else:
@@ -380,7 +357,6 @@ class ChatService:
             response_id = response_created.get('response_id')
             if parent_id and response_id:
                 chat_manager.update_parent_info(parent_id, response_id)
-                logger.info(f"Updated parent_id: {parent_id}, response_id: {response_id}")
         
         # Chuyển đổi response từ Qwen format sang OpenAI format
         openai_response = {
@@ -412,7 +388,6 @@ class ChatService:
             # Sử dụng chat_id hiện tại hoặc tạo mới nếu chưa có
             chat_id = chat_manager.get_current_chat_id()
             if not chat_id:
-                logger.info("No current chat_id, creating new chat...")
                 chat_id = chat_manager.initialize_chat(model)
                 if not chat_id:
                     return {
@@ -421,33 +396,21 @@ class ChatService:
                             "type": "server_error"
                         }
                     }, 500
-                logger.info(f"Created new chat with ID: {chat_id}")
-            else:
-                logger.info(f"Using existing chat ID: {chat_id}")
             
             # Lấy parent_id hiện tại
             parent_id = chat_manager.get_current_parent_id()
-            logger.info(f"Using parent_id: {parent_id}")
             
             # Chuẩn bị request cho Qwen API
             qwen_data = qwen_service.prepare_qwen_request(data, chat_id, model, parent_id)
             
             # Gửi request đến Qwen API
-            logger.info(f"Non-streaming request data preview: {json.dumps(qwen_data, indent=2)[:1000]}...")
-            logger.info(f"Non-streaming request messages count: {len(qwen_data.get('messages', []))}")
-            if qwen_data.get('messages'):
-                logger.info(f"Non-streaming first message content length: {len(qwen_data['messages'][0].get('content', ''))}")
-                logger.info(f"Non-streaming first message content ends with: ...{qwen_data['messages'][0].get('content', '')[-100:]}")
-            
             response = requests.post(
                 f"{QWEN_CHAT_COMPLETIONS_URL}?chat_id={chat_id}",
                 headers=QWEN_HEADERS,
                 json=qwen_data,
                 timeout=300  # 5 phút timeout
             )
-            
-            logger.info(f"Qwen API response status: {response.status_code}")
-            
+                        
             # Kiểm tra response content cho non-streaming
             try:
                 
@@ -467,16 +430,13 @@ class ChatService:
                             elif error_code == "Bad_Request" and "parent_id" in error_details and "not exist" in error_details:
                                 # Xử lý lỗi parent_id không tồn tại cho non-streaming
                                 logger.warning(f"Parent ID not exist error detected: {error_details}")
-                                logger.info("Creating new chat and resetting parent_id...")
                                 
                                 # Tạo chat mới và reset parent_id
                                 new_chat_id = chat_manager.create_new_chat(model)
                                 if new_chat_id:
-                                    logger.info(f"New chat created with ID: {new_chat_id}")
                                     # Gửi lại request với parent_id = None
                                     qwen_data = qwen_service.prepare_qwen_request(data, new_chat_id, model, None)
                                     
-                                    logger.info(f"Retrying request with new chat_id: {new_chat_id} and parent_id: None")
                                     retry_response = requests.post(
                                         f"{QWEN_CHAT_COMPLETIONS_URL}?chat_id={new_chat_id}",
                                         headers=QWEN_HEADERS,
@@ -485,7 +445,6 @@ class ChatService:
                                     )
                                     
                                     if retry_response.status_code == 200:
-                                        logger.info("Retry successful, continuing with new chat...")
                                         # Tiếp tục xử lý response từ retry
                                         response = retry_response
                                         # Tiếp tục xử lý response bình thường

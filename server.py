@@ -128,7 +128,6 @@ def before_request():
 def root():
     """Root endpoint"""
     route_info = "GET / - Root"
-    logger.info(f"ROUTE: {route_info}")
     terminal_ui.update_route(route_info)
     
     return "Ollama is running"
@@ -137,7 +136,6 @@ def root():
 def root_options():
     """OPTIONS for root endpoint"""
     route_info = "OPTIONS / - Root"
-    logger.info(f"ROUTE: {route_info}")
     terminal_ui.update_route(route_info)
     
     response = Response()
@@ -279,7 +277,6 @@ def list_models():
     """List the currently loaded models"""
     if request.method == 'OPTIONS':
         route_info = "OPTIONS /v1/models - List Models"
-        logger.info(f"ROUTE: {route_info}")
         terminal_ui.update_route(route_info)
         
         response = Response()
@@ -289,7 +286,6 @@ def list_models():
         return response
     
     route_info = "GET /v1/models - List Models"
-    logger.info(f"ROUTE: {route_info}")
     terminal_ui.update_route(route_info)
     
     models = qwen_service.get_models_from_qwen()
@@ -326,7 +322,6 @@ def get_model(model_id):
         return jsonify({"error": "Endpoint not available in current mode"}), 404
         
     route_info = f"GET /v1/models/{model_id} - Get Model Info"
-    logger.info(f"ROUTE: {route_info}")
     terminal_ui.update_route(route_info)
     
     try:
@@ -410,9 +405,7 @@ def get_model(model_id):
                 "completion": 0.0002
             }
         }
-        
-        logger.info(f"Model config for {model_id}: contextWindow={context_window}, reservedOutputTokenSpace={reserved_output_space}, supportsThinking={supports_thinking}")
-        
+                
         response = jsonify(model_config)
         response.headers['Content-Type'] = 'application/json'
         return response
@@ -439,11 +432,9 @@ def chat_completions():
         data['model'] = model  # Update the model in data
     
     route_info = f"POST /v1/chat/completions - Chat ({model}, stream: {stream})"
-    logger.info(f"ROUTE: {route_info}")
     terminal_ui.update_route(route_info)
     
     if stream:
-        logger.info("Starting streaming response...")
         return Response(
             stream_qwen_response_with_queue(data),
             mimetype='text/plain',
@@ -454,7 +445,6 @@ def chat_completions():
             }
         )
     else:
-        logger.info("Starting non-streaming response...")
         # Non-streaming response - proxy to Qwen API
         return stream_qwen_response_non_streaming_with_queue(data)
 
@@ -466,7 +456,6 @@ def ollama_list_models():
         return jsonify({"error": "Endpoint not available in current mode"}), 404
         
     route_info = "GET /api/tags - Ollama List Models"
-    logger.info(f"ROUTE: {route_info}")
     terminal_ui.update_route(route_info)
     
     try:
@@ -513,7 +502,6 @@ def ollama_version():
         return jsonify({"error": "Endpoint not available in current mode"}), 404
         
     route_info = "GET /api/version - Ollama Version"
-    logger.info(f"ROUTE: {route_info}")
     terminal_ui.update_route(route_info)
     
     return jsonify({"version": "0.5.11"})
@@ -525,7 +513,6 @@ def ollama_list_running_models():
         return jsonify({"error": "Endpoint not available in current mode"}), 404
         
     route_info = "GET /api/ps - Ollama List Running Models"
-    logger.info(f"ROUTE: {route_info}")
     terminal_ui.update_route(route_info)
     
     try:
@@ -579,7 +566,6 @@ def ollama_show_model():
     model_name = data.get('name', '')
     
     route_info = f"POST /api/show - Ollama Show Model ({model_name})"
-    logger.info(f"ROUTE: {route_info}")
     terminal_ui.update_route(route_info)
     
     try:
@@ -637,7 +623,6 @@ def ollama_generate():
         model = model[:-7]  # Bỏ :latest
     
     route_info = f"POST /api/generate - Ollama Generate ({model}, stream: {stream})"
-    logger.info(f"ROUTE: {route_info}")
     terminal_ui.update_route(route_info)
     
     # Convert Ollama format to OpenAI format
@@ -681,7 +666,6 @@ def ollama_chat():
         model = model[:-7]  # Bỏ :latest
     
     route_info = f"POST /api/chat - Ollama Chat ({model}, stream: {stream})"
-    logger.info(f"ROUTE: {route_info}")
     terminal_ui.update_route(route_info)
     
     # Parse tools thành text nếu có
@@ -719,9 +703,7 @@ def stream_qwen_response_with_queue(data):
     """Stream response from Qwen API with queue system"""
     model = data.get('model', 'qwen3-235b-a22b')
     request_id = str(uuid.uuid4())
-    
-    logger.info(f"Stream function called with model: {model}, request_id: {request_id}")
-    
+        
     # Đợi cho đến khi có thể xử lý với timeout
     if not queue_manager.acquire_lock(request_id):
         yield f"data: {json.dumps({'error': 'Server busy, request timed out'})}\n\n"
@@ -746,13 +728,10 @@ def stream_qwen_response_non_streaming_with_queue(data):
     """Non-streaming response from Qwen API with queue system"""
     model = data.get('model', 'qwen3-235b-a22b')
     request_id = str(uuid.uuid4())
-    
-    logger.info(f"Non-streaming function called with model: {model}, request_id: {request_id}")
-    
+        
     # Kiểm tra nếu có request đang xử lý
     with queue_manager.chat_lock:
         if queue_manager.current_processing:
-            logger.info(f"Non-streaming request {request_id} waiting in queue. Queue size: {len(queue_manager.chat_queue)}")
             return jsonify({
                 "error": {
                     "message": "Server busy, please try again later",
@@ -763,7 +742,6 @@ def stream_qwen_response_non_streaming_with_queue(data):
         else:
             queue_manager.current_processing = True
             queue_manager.current_processing_start_time = time.time()
-            logger.info(f"Non-streaming request {request_id} starting processing")
     
     try:
         # Xử lý request hiện tại
@@ -807,7 +785,6 @@ def internal_error(error):
 def completions():
     """Text completions (deprecated)"""
     route_info = "POST /v1/completions - Deprecated"
-    logger.info(f"ROUTE: {route_info}")
     terminal_ui.update_route(route_info)
     
     return jsonify({
@@ -822,7 +799,6 @@ def completions():
 def embeddings():
     """Text embeddings"""
     route_info = "POST /v1/embeddings - Not Supported"
-    logger.info(f"ROUTE: {route_info}")
     terminal_ui.update_route(route_info)
     
     return jsonify({
@@ -832,44 +808,6 @@ def embeddings():
             "code": "not_supported"
         }
     }), 400
-
-@app.route('/v1/test/large_request', methods=['POST'])
-def test_large_request():
-    """Test endpoint để kiểm tra request lớn"""
-    route_info = "POST /v1/test/large_request - Test Large Request"
-    logger.info(f"ROUTE: {route_info}")
-    terminal_ui.update_route(route_info)
-    
-    try:
-        # Đọc raw data
-        raw_data = request.get_data()
-        logger.info(f"Test large request - Raw data length: {len(raw_data)} bytes")
-        
-        # Parse JSON
-        data = request.get_json()
-        
-        # Tạo response với thông tin chi tiết
-        response_info = {
-            "success": True,
-            "raw_data_length": len(raw_data),
-            "parsed_data_keys": list(data.keys()) if data else [],
-            "content_length": request.content_length,
-            "messages_count": len(data.get('messages', [])) if data else 0,
-            "server_config": {
-                "max_content_length": app.config.get('MAX_CONTENT_LENGTH'),
-                "max_cookie_size": app.config.get('MAX_COOKIE_SIZE')
-            }
-        }
-        
-        # Lưu test data
-        with open("test_large_request.txt", "w", encoding='utf-8') as f:
-            f.write(raw_data.decode('utf-8', errors='ignore'))
-        
-        return jsonify(response_info)
-        
-    except Exception as e:
-        logger.error(f"Test large request error: {e}")
-        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
     # Hỏi mode trước khi start

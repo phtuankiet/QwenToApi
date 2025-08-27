@@ -30,7 +30,6 @@ class QwenService:
                         "owned_by": "organization_owner"
                     })
                 self.models_cache = openai_models
-                logger.info(f"Converted {len(openai_models)} models from Qwen API")
                 return openai_models
             else:
                 logger.error(f"Qwen API error: {response.status_code} - {response.text}")
@@ -43,7 +42,6 @@ class QwenService:
     def create_new_chat(self, model="qwen3-235b-a22b"):
         """Tạo chat mới từ Qwen API với model được chỉ định"""
         try:
-            logger.info(f"Creating new chat with model: {model}")
             chat_data = {
                 "title": "New Chat",
                 "models": [model],
@@ -52,16 +50,12 @@ class QwenService:
                 "timestamp": int(time.time() * 1000)
             }
             
-            logger.info(f"Chat data: {chat_data}")
             response = requests.post(QWEN_NEW_CHAT_URL, headers=QWEN_HEADERS, json=chat_data)
-            logger.info(f"Create chat response status: {response.status_code}")
             
             if response.status_code == 200:
                 result = response.json()
-                logger.info(f"Create chat response: {result}")
                 if result.get('success'):
                     chat_id = result['data']['id']
-                    logger.info(f"Created chat with ID: {chat_id}")
                     return chat_id
                 else:
                     logger.error(f"Failed to create chat: {result}")
@@ -87,7 +81,6 @@ class QwenService:
         
         # Xử lý tất cả messages để tạo context đầy đủ
         messages = data.get('messages', [])
-        logger.info(f"Processing {len(messages)} messages...")
         
         if messages:
             # Tạo context từ tất cả messages
@@ -96,10 +89,6 @@ class QwenService:
             for i, msg in enumerate(messages):
                 role = msg.get('role', '')
                 content = msg.get('content', '')
-                logger.info(f"Content: {content}")
-                
-                logger.info(f"Processing message {i+1}/{len(messages)}: role={role}, content_length={len(content)}")
-                logger.info(f"Message {i+1} content preview: {content[:200]}...")
                 
                 if role == 'system':
                     # System message - thêm vào đầu context
@@ -111,7 +100,7 @@ class QwenService:
                     # Assistant message - thêm vào context
                     context_parts.append(f"Assistant: {content}")
                 else:
-                    logger.info(f"Unknown role: {role}")
+                    logger.warning(f"Unknown role: {role}")
             
             # Kết hợp tất cả context
             combined_content = "\n\n".join(context_parts)
@@ -141,7 +130,6 @@ class QwenService:
                 "parent_id": parent_id  # Sử dụng parent_id nếu có
             }
             qwen_data["messages"].append(qwen_msg)
-            logger.info(f"Prepared Qwen message with {len(combined_content)} characters, parent_id={parent_id}")
         
         return qwen_data
 

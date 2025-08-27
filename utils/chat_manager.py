@@ -15,14 +15,12 @@ class ChatManager:
     def initialize_chat(self, model="qwen3-235b-a22b"):
         """Khởi tạo chat_id khi server bắt đầu"""
         self.model = model
-        logger.info(f"Initializing chat with model: {model}")
         
         chat_id = qwen_service.create_new_chat(model)
         if chat_id:
             self.current_chat_id = chat_id
             self.current_parent_id = None
             self.current_response_id = None
-            logger.info(f"Chat initialized with ID: {chat_id}")
             return chat_id
         else:
             logger.error("Failed to initialize chat")
@@ -40,7 +38,6 @@ class ChatManager:
         """Cập nhật parent_id và response_id từ response"""
         self.current_parent_id = parent_id
         self.current_response_id = response_id
-        logger.info(f"Updated parent_id: {parent_id}, response_id: {response_id}")
         
         # Cập nhật terminal UI
         try:
@@ -54,14 +51,12 @@ class ChatManager:
         if model:
             self.model = model
         
-        logger.info(f"Creating new chat with model: {self.model}")
         chat_id = qwen_service.create_new_chat(self.model)
         
         if chat_id:
             self.current_chat_id = chat_id
             self.current_parent_id = None
             self.current_response_id = None
-            logger.info(f"New chat created with ID: {chat_id}")
             return chat_id
         else:
             logger.error("Failed to create new chat")
@@ -72,7 +67,6 @@ class ChatManager:
         self.current_chat_id = None
         self.current_parent_id = None
         self.current_response_id = None
-        logger.info("Chat ID and parent info reset to None")
 
 # Global chat manager instance
 chat_manager = ChatManager()

@@ -24,8 +24,7 @@ class QueueManager:
                     self.current_processing = False
                     self.current_processing_start_time = None
                 return True
-            elif stuck_duration > 30:  # Log sau 30 giây
-                logger.info(f"Lock has been active for {stuck_duration:.1f} seconds")
+
         return False
     
     def acquire_lock(self, request_id):
@@ -46,14 +45,7 @@ class QueueManager:
                 if not self.current_processing:
                     self.current_processing = True
                     self.current_processing_start_time = time.time()
-                    logger.info(f"Request {request_id} starting processing")
                     return True
-                else:
-                    # Log thời gian chờ và trạng thái lock
-                    wait_duration = time.time() - start_wait_time
-                    lock_duration = time.time() - self.current_processing_start_time if self.current_processing_start_time else 0
-                    if wait_duration > 5:  # Log sau 5 giây chờ
-                        logger.info(f"Request {request_id} waiting for lock... (waited {wait_duration:.1f}s, lock active {lock_duration:.1f}s)")
             
             # Đợi một chút trước khi kiểm tra lại
             time.sleep(0.1)
@@ -63,7 +55,6 @@ class QueueManager:
         with self.chat_lock:
             self.current_processing = False
             self.current_processing_start_time = None
-            logger.info(f"Request {request_id} completed/failed, releasing lock")
     
     def get_status(self):
         """Lấy trạng thái queue"""

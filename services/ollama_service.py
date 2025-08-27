@@ -22,9 +22,7 @@ class OllamaService:
         model = data.get('model', 'qwen3-235b-a22b')
         request_id = str(uuid.uuid4())
         request_state = RequestState(request_id, model)
-        
-        logger.info(f"Ollama stream function called with model: {model}, request_id: {request_id}")
-        
+                
         try:
             stream_start_ns = time.perf_counter_ns()
             first_token_ns = None
@@ -75,16 +73,13 @@ class OllamaService:
                             if error_code == "Bad_Request" and "parent_id" in error_details and "not exist" in error_details:
                                 # Xử lý lỗi parent_id không tồn tại
                                 logger.warning(f"Parent ID not exist error detected: {error_details}")
-                                logger.info("Creating new chat and resetting parent_id...")
                                 
                                 # Tạo chat mới và reset parent_id
                                 new_chat_id = qwen_service.create_new_chat(model)
                                 if new_chat_id:
-                                    logger.info(f"New chat created with ID: {new_chat_id}")
                                     # Gửi lại request với parent_id = None
                                     qwen_data = qwen_service.prepare_qwen_request(data, new_chat_id, model)
                                     
-                                    logger.info(f"Retrying request with new chat_id: {new_chat_id} and parent_id: None")
                                     retry_response = requests.post(
                                         f"{QWEN_CHAT_COMPLETIONS_URL}?chat_id={new_chat_id}",
                                         headers=QWEN_HEADERS,
@@ -94,7 +89,6 @@ class OllamaService:
                                     )
                                     
                                     if retry_response.status_code == 200:
-                                        logger.info("Retry successful, continuing with new chat...")
                                         # Tiếp tục xử lý response từ retry
                                         response = retry_response
                                     else:
@@ -150,7 +144,6 @@ class OllamaService:
                                     response_id = response_created.get('response_id')
                                     if parent_id and response_id:
                                         chat_manager.update_parent_info(parent_id, response_id)
-                                        logger.info(f"Updated parent_id: {parent_id}, response_id: {response_id}")
                                     continue  # Bỏ qua chunk này
                                 
                                 if chunk_data.get('choices') and chunk_data['choices'][0].get('delta'):
@@ -167,21 +160,21 @@ class OllamaService:
                                     
                                     # Xử lý think mode
                                     if phase == "think":
-                                        # Nếu bắt đầu think mode và chưa gửi thinking message
+                                        # Nếu bắt đầu think mode và chưa gửi <think> tag
                                         if not request_state.think_started:
                                             request_state.think_started = True
-                                            # Gửi thinking message với content rỗng để báo hiệu bắt đầu
+                                            # Gửi <think> tag
                                             ollama_chunk = {
                                                 "model": model,
                                                 "created_at": created_at,
                                                 "message": {
                                                     "role": "assistant",
-                                                    "thinking": ""
+                                                    "content": "<think>"
                                                 },
                                                 "done": False
                                             }
                                             yield json.dumps(ollama_chunk) + "\n"
-                                        
+
                                         # Gửi content trong think mode
                                         if content:
                                             ollama_chunk = {
@@ -189,16 +182,27 @@ class OllamaService:
                                                 "created_at": created_at,
                                                 "message": {
                                                     "role": "assistant",
-                                                    "thinking": content
+                                                    "content": content
                                                 },
                                                 "done": False
                                             }
                                             # Ước lượng token đầu ra (số từ)
                                             output_token_count += max(1, len(content.strip().split()))
                                             yield json.dumps(ollama_chunk) + "\n"
-                                        
+
                                         # Nếu think mode kết thúc (status finished)
                                         if delta.get('status') == 'finished':
+                                            # Gửi </think> tag
+                                            ollama_chunk = {
+                                                "model": model,
+                                                "created_at": created_at,
+                                                "message": {
+                                                    "role": "assistant",
+                                                    "content": "</think>"
+                                                },
+                                                "done": False
+                                            }
+                                            yield json.dumps(ollama_chunk) + "\n"
                                             # Reset think state
                                             request_state.think_started = False
                                     
@@ -328,31 +332,22 @@ class OllamaService:
         """Gọi trực tiếp Qwen API và trả về non-streaming response cho Ollama"""
         try:
             model = data.get('model', 'qwen3-235b-a22b')
-            messages = data.get('messages', [])
             request_id = str(uuid.uuid4())
             request_state = RequestState(request_id, model)
-            
-            logger.info(f"call_ollama_api_direct called with model: {model}")
-            
+                        
             # Tạo chat mới
             chat_id = qwen_service.create_new_chat(model)
             if not chat_id:
                 logger.error("Failed to create chat for Ollama request")
-                return {'content': 'Error: Failed to create chat'}
-            
-            logger.info(f"Created chat_id: {chat_id}")
-            
+                return {'content': 'Error: Failed to create chat'}            
             # Chuẩn bị request data
             qwen_data = qwen_service.prepare_qwen_request(data, chat_id, model)
             
             # Force streaming để capture content
             qwen_data['stream'] = True
             qwen_data['incremental_output'] = True
-            
-            logger.info(f"Prepared qwen_data with streaming: {qwen_data}")
-            
+                        
             # Gọi Qwen API với streaming để capture toàn bộ content
-            logger.info(f"Calling Qwen API with streaming: {QWEN_CHAT_COMPLETIONS_URL}?chat_id={chat_id}")
             response = requests.post(
                 f"{QWEN_CHAT_COMPLETIONS_URL}?chat_id={chat_id}",
                 headers=QWEN_HEADERS,
@@ -360,9 +355,7 @@ class OllamaService:
                 stream=True,
                 timeout=300
             )
-            
-            logger.info(f"Qwen API response status: {response.status_code}")
-            
+                        
             # Kiểm tra response content trước khi xử lý
             try:
                 content_type = response.headers.get('content-type', '')
@@ -378,16 +371,13 @@ class OllamaService:
                             if error_code == "Bad_Request" and "parent_id" in error_details and "not exist" in error_details:
                                 # Xử lý lỗi parent_id không tồn tại
                                 logger.warning(f"Parent ID not exist error detected: {error_details}")
-                                logger.info("Creating new chat and resetting parent_id...")
                                 
                                 # Tạo chat mới và reset parent_id
                                 new_chat_id = qwen_service.create_new_chat(model)
                                 if new_chat_id:
-                                    logger.info(f"New chat created with ID: {new_chat_id}")
                                     # Gửi lại request với parent_id = None
                                     qwen_data = qwen_service.prepare_qwen_request(data, new_chat_id, model)
                                     
-                                    logger.info(f"Retrying request with new chat_id: {new_chat_id} and parent_id: None")
                                     retry_response = requests.post(
                                         f"{QWEN_CHAT_COMPLETIONS_URL}?chat_id={new_chat_id}",
                                         headers=QWEN_HEADERS,
@@ -397,7 +387,6 @@ class OllamaService:
                                     )
                                     
                                     if retry_response.status_code == 200:
-                                        logger.info("Retry successful, continuing with new chat...")
                                         # Tiếp tục xử lý response từ retry
                                         response = retry_response
                                     else:
@@ -452,15 +441,12 @@ class OllamaService:
                                         # Normal content (answer phase hoặc không có phase)
                                         if content:
                                             full_content += content
-                                            logger.info(f"Captured content chunk: {content}")
                                             
                             except json.JSONDecodeError:
                                 continue
                         elif line_str.startswith('data: [DONE]'):
                             break
                 
-                logger.info(f"Total captured content: {full_content}")
-                logger.info(f"Total thinking content: {thinking_content}")
                 return {'content': full_content, 'thinking': thinking_content}
             else:
                 logger.error(f"Qwen API error: {response.status_code} - {response.text}")
@@ -476,20 +462,14 @@ class OllamaService:
         """Non-streaming Ollama response format - Direct Qwen API call"""
         model = data.get('model', 'qwen3-235b-a22b')
         request_id = str(uuid.uuid4())
-        
-        logger.info(f"Ollama non-streaming function called with model: {model}, request_id: {request_id}")
-        
+                
         try:
             # Gọi trực tiếp Qwen API và convert sang Ollama format
-            logger.info(f"Calling call_ollama_api_direct with data: {data}")
             response = self.call_ollama_api_direct(data)
-            logger.info(f"Qwen API response: {response}")
             
             if response and isinstance(response, dict):
                 content = response.get('content', '')
                 thinking = response.get('thinking', '')
-                logger.info(f"Extracted content: {content}")
-                logger.info(f"Extracted thinking: {thinking}")
                 
                 # Format timestamp như Ollama
                 created_at = datetime.now().isoformat() + "Z"
@@ -511,11 +491,10 @@ class OllamaService:
                     "eval_duration": 511000000
                 }
                 
-                # Thêm thinking field nếu có
+                # Thêm thinking content vào content field với <think> tags nếu có
                 if thinking:
-                    ollama_response["message"]["thinking"] = thinking
+                    ollama_response["message"]["content"] = f"<think>{thinking}</think>\n\n{content}"
                 
-                logger.info(f"Returning ollama response: {ollama_response}")
                 return ollama_response
             else:
                 logger.error(f"Invalid response format: {response}")
