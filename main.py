@@ -231,12 +231,33 @@ def before_request():
     # Log request cơ bản và đánh dấu thời điểm bắt đầu
     try:
         g._req_start_time = time.time()
-        qs = ''
+        # --- Xử lý query params ---
+        params_keys = ''
         try:
-            qs = request.query_string.decode('utf-8', 'ignore')
+            args_dict = request.args.to_dict(flat=True)  # convert ImmutableMultiDict -> dict
+            params_keys = '{' + ', '.join(args_dict.keys()) + '}' if args_dict else '{}'
         except Exception:
-            qs = ''
-        _ui_log(f"➡️  {request.method} {request.path} | ip={request.remote_addr} | qs={qs}", level="info")
+            params_keys = '{}'
+        
+        try:
+            raw_body = request.get_data(as_text=True)
+            body_keys = ""
+            try:
+                # Chỉ lấy key nếu là JSON
+                data = json.loads(raw_body)
+                if isinstance(data, dict):
+                    body_keys = '{' + ', '.join(data.keys()) + '}'
+                elif isinstance(data, list):
+                    # Nếu gửi list of dict, lấy key của object đầu tiên
+                    body_keys = '{' + ', '.join(data[0].keys()) + '}' if data else ''
+                else:
+                    body_keys = ''
+            except Exception:
+                body_keys = ''
+        except Exception:
+            body_keys = ""
+        
+        _ui_log(f"➡️ {request.method} {request.path} | ip={request.remote_addr} | params={params_keys} | body={body_keys}", level="info")
     except Exception:
         pass
 

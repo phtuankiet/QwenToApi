@@ -324,6 +324,41 @@ Escape    - Close popup windows
 
         # Center window on screen initially
         self.root.update_idletasks()
+    
+    def _setup_window_close_handler(self):
+        """Setup window close handler with server confirmation"""
+        self.root.protocol("WM_DELETE_WINDOW", self._on_window_close)
+    
+    def _on_window_close(self):
+        """Handle window close event with server confirmation"""
+        if self.server_running:
+            # Show confirmation dialog when server is running
+            result = messagebox.askyesno(
+                "Close Application",
+                "The server is currently running.\n\n"
+                f"Server: {self.ip_address}:{self.port}\n"
+                f"Mode: {self.mode}\n\n"
+                "Do you want to stop the server and close the application?\n\n"
+                "Press 'Yes' to stop server and close, or 'No' to keep running.",
+                icon='warning'
+            )
+            
+            if result:
+                # User confirmed - stop server and close
+                try:
+                    import main as _server
+                    _server.stop_embedded()
+                except Exception as e:
+                    logger.warning(f"Error stopping server on close: {e}")
+                
+                self.server_running = False
+                self.root.destroy()
+            else:
+                # User cancelled - don't close
+                return
+        
+        # Server not running or user confirmed - close normally
+        self.root.destroy()
 
     def _on_window_map(self, event):
         """Handle window being mapped (shown/restored)"""
@@ -350,7 +385,7 @@ Escape    - Close popup windows
 
         # Left side - connection info
         self.connection_status = ttk.Label(status_bar,
-                                         text="Ready",
+                                         text="Stopped",
                                          foreground="white",
                                          background=self.colors['secondary'],
                                          font=('Helvetica', status_font_size))
@@ -436,6 +471,9 @@ Escape    - Close popup windows
 
         # Setup window state management
         self._setup_window_state_management()
+        
+        # Setup window close handler
+        self._setup_window_close_handler()
 
         return True
 
@@ -745,7 +783,8 @@ Escape    - Close popup windows
         self.server_port_value.grid(row=1, column=1, sticky="w", padx=5)
 
         ttk.Label(info_frame, text="🌐 Host:", font=('Helvetica', status_font_size)).grid(row=1, column=2, sticky="w", padx=15)
-        ttk.Label(info_frame, text="0.0.0.0", font=('Helvetica', status_font_size)).grid(row=1, column=3, sticky="w", padx=5)
+        self.server_host_value = ttk.Label(info_frame, text="Not set", font=('Helvetica', status_font_size))
+        self.server_host_value.grid(row=1, column=3, sticky="w", padx=5)
 
         # Current route card
         route_card = ttk.Frame(main_tab, style='Card.TFrame')
@@ -1094,6 +1133,14 @@ Escape    - Close popup windows
 
         self.server_mode_value.config(text=current_mode or "Not set")
         self.server_port_value.config(text=str(current_port) if current_port else "Not set")
+        
+        # Update host display with saved IP address
+        try:
+            current_ip = self.ip_entry.get().strip() if hasattr(self, 'ip_entry') else self.ip_address
+        except Exception:
+            current_ip = self.ip_address
+        if hasattr(self, 'server_host_value'):
+            self.server_host_value.config(text=current_ip or "Not set")
 
         # Update status bar
         self._update_server_status()
@@ -1213,7 +1260,7 @@ Escape    - Close popup windows
             if hasattr(self, 'server_status'):
                 # Check if server is running by trying to import and check
                 try:
-                    from server import app
+                    from main import app
                     # Simple check - if we can import, assume server code is available
                     # Prefer current UI selections to avoid mode desync
                     try:
@@ -1229,7 +1276,9 @@ Escape    - Close popup windows
                     import socket
                     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     sock.settimeout(0.1)
-                    result = sock.connect_ex(('127.0.0.1', port))
+                    # Use saved IP address for connection check
+                    check_ip = getattr(self, 'ip_address', '127.0.0.1')
+                    result = sock.connect_ex((check_ip, port))
                     sock.close()
 
                     if result == 0:
@@ -1312,7 +1361,47 @@ Escape    - Close popup windows
             return socket.gethostbyname(hostname)
         except Exception as e:
             logger.error(f"Error getting local IP: {e}")
-            return "127.0.0.1"
+            # Use saved IP address as fallback instead of hardcoded 127.0.0.1
+            return getattr(self, 'ip_address', '127.0.0.1')
+    
+    def _check_port_availability(self, ip_address, port):
+        """Check if the port is available for binding"""
+        try:
+            import socket
+            
+            # First, check if port is already in use by trying to connect to it
+            try:
+                test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                test_sock.settimeout(1)
+                result = test_sock.connect_ex((ip_address, port))
+                test_sock.close()
+                
+                if result == 0:
+                    return False, f"Port {port} is already in use by another application"
+            except Exception:
+                pass  # Continue with bind test even if connect test fails
+            
+            # Try to bind to the port
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(1)
+            
+            # Try to bind to the port
+            result = sock.bind((ip_address, port))
+            sock.close()
+            return True, None
+        except socket.error as e:
+            error_code = e.errno
+            # Cross-platform error code mapping
+            if error_code in [10048, 98]:  # WSAEADDRINUSE on Windows, EADDRINUSE on Linux/Mac
+                return False, f"Port {port} is already in use by another application"
+            elif error_code in [10013, 13]:  # WSAEACCES on Windows, EACCES on Linux/Mac
+                return False, f"Port {port} requires elevated permissions (try running as administrator)"
+            elif error_code in [10049, 99]:  # WSAEADDRNOTAVAIL on Windows, EADDRNOTAVAIL on Linux/Mac
+                return False, f"IP address {ip_address} is not available on this machine"
+            else:
+                return False, f"Port {port} is not available: {str(e)}"
+        except Exception as e:
+            return False, f"Error checking port availability: {str(e)}"
     
     def _start_server(self):
         """Start the server"""
@@ -1344,7 +1433,27 @@ Escape    - Close popup windows
             messagebox.showerror("Missing Cookie", "Please paste your Qwen cookie (JSON array) in Settings before starting the server")
             return
         
+        # Check port availability before starting server
+        if hasattr(self, 'connection_status'):
+            self.connection_status.config(text="Checking port availability...")
+            self.root.update()
+        
+        port_available, error_message = self._check_port_availability(self.ip_address, self.port)
+        if not port_available:
+            # Add helpful suggestions for common port conflicts
+            suggestion = ""
+            if self.port == 1235 and "already in use" in error_message:
+                suggestion = "\n\n💡 Suggestion: Port 1235 might be used by LM Studio. Try stopping LM Studio or use a different port."
+            elif self.port == 11434 and "already in use" in error_message:
+                suggestion = "\n\n💡 Suggestion: Port 11434 might be used by Ollama. Try stopping Ollama or use a different port."
+            elif "requires elevated permissions" in error_message:
+                suggestion = "\n\n💡 Suggestion: Try running the application as administrator or use a port above 1024."
+            
+            messagebox.showerror("Port Not Available", error_message + suggestion)
+            return
+        
         # Start server in a separate thread
+        self.connection_status.config(text="Starting server...")
         self.server_running = True
         self._update_status()
         
@@ -1382,12 +1491,27 @@ Escape    - Close popup windows
 
         # Update status bar
         self._update_server_status()
+        self.connection_status.config(text="Ready")
     
     def _stop_server(self):
         """Stop the server"""
         if not self.server_running:
             return
-            
+        
+        # Show confirmation dialog
+        result = messagebox.askyesno(
+            "Stop Server",
+            "Are you sure you want to stop the server?\n\n"
+            f"Server: {self.ip_address}:{self.port}\n"
+            f"Mode: {self.mode}\n\n"
+            "Press 'Yes' to stop the server or 'No' to cancel.",
+            icon='question'
+        )
+        
+        if not result:
+            return  # User clicked No
+    
+        self.connection_status.config(text="Stopping server...")
         self.server_running = False
         self._update_status()
 
@@ -1398,6 +1522,7 @@ Escape    - Close popup windows
         try:
             import main as _server
             _server.stop_embedded()
+            self.connection_status.config(text="Stopped")
         except Exception as e:
             logger.warning(f"Embedded stop error: {e}")
     
@@ -2404,6 +2529,8 @@ Use the Settings tab to configure the server mode.
                 self.server_mode_value.config(font=('Helvetica', status_font_size))
             if hasattr(self, 'server_port_value'):
                 self.server_port_value.config(font=('Helvetica', status_font_size))
+            if hasattr(self, 'server_host_value'):
+                self.server_host_value.config(font=('Helvetica', status_font_size))
             if hasattr(self, 'queue_status'):
                 self.queue_status.config(font=('Helvetica', status_font_size))
             if hasattr(self, 'queue_size_label'):
