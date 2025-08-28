@@ -1,3 +1,5 @@
 ui_settings.json
 *.pyc
 *.log
+/main.dist
+QwenToApi.exe

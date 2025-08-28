@@ -8,6 +8,7 @@ import json
 import os
 import argparse
 import sys
+import copy
 
 # Import các module đã tách
 from utils.logging_config import setup_logging
@@ -335,7 +336,7 @@ def parse_tools_to_text(tools):
 def _make_display_data_short(data, max_len: int = 200):
     """Tạo bản sao rút gọn data chỉ để hiển thị trong UI, không ảnh hưởng dữ liệu gốc."""
     try:
-        display_data = data.copy() if data else {}
+        display_data = copy.deepcopy(data) if data else {}
         # Truncate long messages for display
         if 'messages' in display_data and isinstance(display_data['messages'], list):
             for msg in display_data['messages']:
@@ -735,7 +736,7 @@ def ollama_show_model():
         model_name = model_name[:-7]
     
     route_info = f"POST /api/show - Ollama Show Model ({model_name})"
-    ui_manager.update_route(route_info, _make_display_data_short(data))
+    ui_manager.update_route(route_info, data)
     
     try:
         qwen_models = get_cached_qwen_models()
