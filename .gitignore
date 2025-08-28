@@ -3,3 +3,4 @@ ui_settings.json
 *.log
 /main.dist
 QwenToApi.exe
+.cursorignore

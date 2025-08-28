@@ -312,11 +312,23 @@ Escape    - Close popup windows
 
         # Set window icon if available
         try:
-            # You can add an icon file here if you have one
-            # self.root.iconbitmap('icon.ico')
-            pass
-        except:
-            pass
+            icon_path = self._get_icon_path()
+            if icon_path and os.path.exists(icon_path):
+                # Try iconbitmap first (Windows)
+                try:
+                    self.root.iconbitmap(icon_path)
+                    logger.info(f"Window icon set: {icon_path}")
+                except:
+                    # Fallback for other platforms
+                    try:
+                        self.root.iconphoto(True, tk.PhotoImage(file=icon_path))
+                        logger.info(f"Window icon set (photo): {icon_path}")
+                    except:
+                        logger.warning(f"Could not set window icon with photo method")
+            else:
+                logger.warning(f"Icon file not found: {icon_path}")
+        except Exception as e:
+            logger.warning(f"Could not set window icon: {e}")
 
         # Make window appear in taskbar properly
         self.root.lift()
@@ -1363,6 +1375,44 @@ Escape    - Close popup windows
             logger.error(f"Error getting local IP: {e}")
             # Use saved IP address as fallback instead of hardcoded 127.0.0.1
             return getattr(self, 'ip_address', '127.0.0.1')
+    
+    def _get_icon_path(self):
+        """Get the path to the icon file for both development and compiled environments"""
+        try:
+            import os
+            import sys
+            
+            # Handle both development and compiled environments
+            if getattr(sys, 'frozen', False):
+                # Running as compiled exe (Nuitka/PyInstaller)
+                if hasattr(sys, '_MEIPASS'):
+                    # PyInstaller
+                    base_path = sys._MEIPASS
+                else:
+                    # Nuitka
+                    base_path = os.path.dirname(sys.executable)
+                
+                # Try multiple possible locations for the icon
+                possible_paths = [
+                    os.path.join(base_path, 'qwen.ico'),
+                    os.path.join(os.path.dirname(base_path), 'qwen.ico'),
+                    os.path.join(base_path, 'main.dist', 'qwen.ico'),
+                    os.path.join(base_path, 'main.onefile-build', 'qwen.ico')
+                ]
+                
+                for path in possible_paths:
+                    if os.path.exists(path):
+                        return path
+                
+                # If not found in any of the expected locations, return the first one
+                return possible_paths[0]
+            else:
+                # Running in development
+                return os.path.join(os.path.dirname(os.path.dirname(__file__)), 'qwen.ico')
+                
+        except Exception as e:
+            logger.error(f"Error determining icon path: {e}")
+            return None
     
     def _check_port_availability(self, ip_address, port):
         """Check if the port is available for binding"""
