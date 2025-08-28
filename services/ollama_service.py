@@ -73,6 +73,11 @@ class OllamaService:
                             error_code = response_json.get('data', {}).get('code', 'Unknown')
                             error_details = response_json.get('data', {}).get('details', 'Unknown error')
                             logger.error(f"Qwen API error: {error_code} - {error_details}")
+                            # If model not found, return Ollama-style error immediately
+                            if error_code == "Not_Found" and "Model not found" in str(error_details):
+                                err = {"error": f"model '{data.get('model', model)}' not found"}
+                                yield json.dumps(err) + "\n"
+                                return
                             
                             if error_code == "Bad_Request" and "parent_id" in error_details and "not exist" in error_details:
                                 # Xử lý lỗi parent_id không tồn tại
@@ -409,6 +414,9 @@ class OllamaService:
                             error_code = response_json.get('data', {}).get('code', 'Unknown')
                             error_details = response_json.get('data', {}).get('details', 'Unknown error')
                             logger.error(f"Qwen API error: {error_code} - {error_details}")
+                            # Map model-not-found error to Ollama-style error
+                            if error_code == "Not_Found" and "Model not found" in str(error_details):
+                                return {"error": f"model '{data.get('model', model)}' not found"}
                             
                             if error_code == "Bad_Request" and "parent_id" in error_details and "not exist" in error_details:
                                 # Xử lý lỗi parent_id không tồn tại

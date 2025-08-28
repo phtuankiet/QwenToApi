@@ -21,6 +21,8 @@ from services.ollama_service import ollama_service
 from models.request_state import RequestState
 from werkzeug.serving import make_server
 import threading
+from controllers.lmstudio import lmstudio_bp
+from controllers.ollama import ollama_bp
 
 # Parse command line arguments
 def parse_arguments():
@@ -65,6 +67,21 @@ app.config['JSONIFY_MIMETYPE'] = 'application/json'
 app.config['JSONIFY_PRETTYPRINT_REGULAR'] = True
 app.config['JSON_SORT_KEYS'] = False
 
+# Expose shared services/state to controllers via app.config
+app.config.update({
+    'ui_manager': ui_manager,
+    'qwen_service': qwen_service,
+    'chat_service': chat_service,
+    'ollama_service': ollama_service,
+    'queue_manager': queue_manager,
+    'RequestState': RequestState,
+    'SERVER_MODE': None,
+})
+
+# Register blueprints
+app.register_blueprint(lmstudio_bp)
+app.register_blueprint(ollama_bp)
+
 # Tăng giới hạn JSON serialization
 import sys
 sys.setrecursionlimit(10000)  # Tăng recursion limit
@@ -94,6 +111,9 @@ def get_cached_qwen_models(force_refresh: bool = False):
     except Exception as e:
         logger.error(f"Error getting cached models: {e}")
         return MODELS_CACHE or []
+
+# Make cached models accessor available to controllers
+app.config['get_cached_qwen_models'] = get_cached_qwen_models
 
 # Parse arguments first
 args = parse_arguments()
@@ -139,6 +159,7 @@ def setup_logging_with_background():
         return setup_logging()
 
 logger = setup_logging_with_background()
+app.config['logger'] = logger
 
 def _ui_log(message: str, level: str = "info"):
     """Log ra logger và cố gắng đẩy vào GUI Logs tab nếu khả dụng."""
@@ -216,6 +237,16 @@ def before_request():
         except Exception:
             qs = ''
         _ui_log(f"➡️  {request.method} {request.path} | ip={request.remote_addr} | qs={qs}", level="info")
+    except Exception:
+        pass
+
+    # Sync SERVER_MODE from GUI/terminal UI state (ui_settings.json driven)
+    try:
+        ui = getattr(ui_manager, 'current_ui', None)
+        if ui is not None and hasattr(ui, 'mode'):
+            mode_value = getattr(ui, 'mode', None)
+            if mode_value in ("ollama", "lmstudio"):
+                app.config['SERVER_MODE'] = mode_value
     except Exception:
         pass
 
@@ -379,6 +410,7 @@ def ask_server_mode():
     # Nếu có argument --mode, sử dụng luôn
     if args.mode:
         SERVER_MODE = args.mode
+        app.config['SERVER_MODE'] = SERVER_MODE
         if SERVER_MODE == "lmstudio":
             if not BACKGROUND_MODE:
                 print("✅ Đã chọn LM Studio Mode - Port 1235")
@@ -392,11 +424,13 @@ def ask_server_mode():
     if args.port:
         if args.port == 1235:
             SERVER_MODE = "lmstudio"
+            app.config['SERVER_MODE'] = SERVER_MODE
             if not BACKGROUND_MODE:
                 print("✅ Đã chọn LM Studio Mode - Port 1235")
             return 1235
         elif args.port == 11434:
             SERVER_MODE = "ollama"
+            app.config['SERVER_MODE'] = SERVER_MODE
             if not BACKGROUND_MODE:
                 print("✅ Đã chọn Ollama Mode - Port 11434")
             return 11434
@@ -407,6 +441,7 @@ def ask_server_mode():
     # Trong background mode, default to lmstudio nếu không có argument
     if BACKGROUND_MODE:
         SERVER_MODE = "lmstudio"
+        app.config['SERVER_MODE'] = SERVER_MODE
         return 1235
     
     # Hỏi người dùng chọn mode nếu không có argument
@@ -422,10 +457,12 @@ def ask_server_mode():
             choice = input("Chọn mode (1 hoặc 2): ").strip()
             if choice == "1":
                 SERVER_MODE = "lmstudio"
+                app.config['SERVER_MODE'] = SERVER_MODE
                 print("✅ Đã chọn LM Studio Mode - Port 1235")
                 return 1235
             elif choice == "2":
                 SERVER_MODE = "ollama"
+                app.config['SERVER_MODE'] = SERVER_MODE
                 print("✅ Đã chọn Ollama Mode - Port 11434")
                 return 11434
             else:
@@ -434,535 +471,7 @@ def ask_server_mode():
             print("\n🛑 Thoát chương trình")
             sys.exit(0)
 
-# LM Studio API Endpoints
-@app.route('/v1/models', methods=['GET', 'OPTIONS'])
-def list_models():
-    """List the currently loaded models"""
-    if request.method == 'OPTIONS':
-        route_info = "OPTIONS /v1/models - List Models"
-        ui_manager.update_route(route_info)
-        
-        response = Response()
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
-        response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-        return response
-    
-    route_info = "GET /v1/models - List Models"
-    ui_manager.update_route(route_info)
-    
-    models = get_cached_qwen_models()
-    
-    if SERVER_MODE == "ollama":
-        # Convert to Ollama format
-        formatted_models = []
-        for model in models:
-            model_id = model.get('id', '')
-            if model_id:
-                # Add :latest suffix for Ollama format
-                model_name_with_latest = f"{model_id}:latest"
-                formatted_models.append({
-                    "id": model_name_with_latest,
-                    "object": "model",
-                    "created": int(time.time()),
-                    "owned_by": "library"
-                })
-    else:
-        # LM Studio format - use original models data
-        formatted_models = models
-    
-    response = jsonify({
-        "object": "list",
-        "data": formatted_models
-    })
-    response.headers['Content-Type'] = 'application/json'
-    return response
-
-
-
-@app.route('/v1/models/<model_id>', methods=['GET'])
-def get_model(model_id):
-    """Get specific model information"""
-    if SERVER_MODE != "lmstudio":
-        return jsonify({"error": "Endpoint not available in current mode"}), 404
-        
-    route_info = f"GET /v1/models/{model_id} - Get Model Info"
-    ui_manager.update_route(route_info)
-    
-    try:
-        # Lấy thông tin model từ Qwen API
-        qwen_models = get_cached_qwen_models()
-        
-        # Tìm model cụ thể
-        target_model = None
-        for model in qwen_models:
-            if model.get('id') == model_id:
-                target_model = model
-                break
-        
-        if not target_model:
-            # Nếu không tìm thấy, trả về lỗi
-            return jsonify({
-                "error": {
-                    "message": f"Model {model_id} not found",
-                    "type": "invalid_request_error",
-                    "code": "model_not_found"
-                }
-            }), 404
-        
-        # Lấy thông tin chi tiết từ info.meta
-        model_info = target_model.get('info', {})
-        meta = model_info.get('meta', {})
-        capabilities = meta.get('capabilities', {})
-        
-        # Map thông tin từ Qwen API sang LM Studio format
-        context_window = meta.get('max_context_length', 131072)
-        
-        # Xác định reservedOutputTokenSpace
-        if 'max_thinking_generation_length' in meta:
-            reserved_output_space = meta.get('max_thinking_generation_length')
-        elif 'max_summary_generation_length' in meta:
-            reserved_output_space = meta.get('max_summary_generation_length')
-        elif 'max_generation_length' in meta:
-            reserved_output_space = meta.get('max_generation_length')
-        else:
-            reserved_output_space = 8192
-        
-        # Kiểm tra có hỗ trợ thinking không
-        supports_thinking = capabilities.get('thinking', False) or capabilities.get('thinking_budget', False)
-        
-        # Map capabilities
-        lm_capabilities = {
-            "vision": capabilities.get('vision', False),
-            "function_calling": True,  # Qwen hỗ trợ function calling
-            "json_output": True,       # Qwen hỗ trợ JSON output
-            "streaming": True,         # Qwen hỗ trợ streaming
-            "document": capabilities.get('document', False),
-            "video": capabilities.get('video', False),
-            "audio": capabilities.get('audio', False),
-            "citations": capabilities.get('citations', False)
-        }
-        
-        # Tạo response cho LM Studio
-        model_config = {
-            "id": model_id,
-            "object": "model",
-            "created": int(time.time()),
-            "owned_by": "qwen",
-            "permission": [],
-            "root": model_id,
-            "parent": None,
-            "contextWindow": context_window,
-            "reservedOutputTokenSpace": reserved_output_space,
-            "supportsSystemMessage": "system-role",
-            "reasoningCapabilities": {
-                "supportsReasoning": supports_thinking,
-                "canTurnOffReasoning": supports_thinking,
-                "canIOReasoning": supports_thinking,
-                "openSourceThinkTags": [
-                    "<think>",
-                    "</think>"
-                ] if supports_thinking else []
-            },
-            "capabilities": lm_capabilities,
-            "pricing": {
-                "prompt": 0.0001,
-                "completion": 0.0002
-            }
-        }
-                
-        response = jsonify(model_config)
-        response.headers['Content-Type'] = 'application/json'
-        return response
-        
-    except Exception as e:
-        logger.error(f"Error getting model info for {model_id}: {e}")
-        return jsonify({
-            "error": {
-                "message": f"Failed to get model information: {str(e)}",
-                "type": "server_error"
-            }
-        }), 500
-
-@app.route('/v1/chat/completions', methods=['POST'])
-def chat_completions():
-    """Chat completions with streaming support"""
-    data = request.get_json()
-    stream = data.get('stream', False)
-    model = data.get('model', 'qwen3-235b-a22b')
-
-    # Remove :latest suffix for Ollama mode
-    if SERVER_MODE == "ollama" and model.endswith(':latest'):
-        model = model[:-7]  # Remove :latest
-        data['model'] = model  # Update the model in data
-
-    route_info = f"POST /v1/chat/completions - Chat ({model}, stream: {stream})"
-
-    # Log route với bản sao rút gọn để hiển thị, không ảnh hưởng dữ liệu gốc
-    ui_manager.update_route(route_info, _make_display_data_short(data))
-    
-    if stream:
-        return Response(
-            stream_qwen_response_with_queue(data),
-            mimetype='text/plain',
-            headers={
-                'Cache-Control': 'no-cache',
-                'Connection': 'keep-alive',
-                'Content-Type': 'text/event-stream'
-            }
-        )
-    else:
-        # Non-streaming response - proxy to Qwen API
-        return stream_qwen_response_non_streaming_with_queue(data)
-
-# Ollama API Endpoints
-@app.route('/api/tags', methods=['GET'])
-def ollama_list_models():
-    """Ollama API: List models"""
-    if SERVER_MODE != "ollama":
-        return jsonify({"error": "Endpoint not available in current mode"}), 404
-        
-    route_info = "GET /api/tags - Ollama List Models"
-    ui_manager.update_route(route_info)
-    
-    try:
-        qwen_models = get_cached_qwen_models()
-        
-        # Convert Qwen models to Ollama format
-        ollama_models = []
-        for model in qwen_models:
-            model_id = model.get('id', '')
-            if model_id:
-                # Format timestamp như Ollama
-                from datetime import datetime
-                modified_at = datetime.now().isoformat() + "+07:00"
-                
-                # Thêm suffix :latest cho model name
-                model_name_with_latest = f"{model_id}:latest"
-                
-                ollama_models.append({
-                    "name": model_name_with_latest,
-                    "model": model_name_with_latest,
-                    "modified_at": modified_at,
-                    "size": 4661224676,  # Default size
-                    "digest": "365c0bd3c000a25d28ddbf732fe1c6add414de7275464c4e4d1c3b5fcb5d8ad1",  # Default digest
-                    "details": {
-                        "parent_model": "",
-                        "format": "gguf",
-                        "family": "qwen",
-                        "families": ["qwen"],
-                        "parameter_size": "235B",
-                        "quantization_level": "Q4_0"
-                    }
-                })
-        
-        return jsonify({"models": ollama_models})
-        
-    except Exception as e:
-        logger.error(f"Error listing Ollama models: {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/api/version', methods=['GET'])
-def ollama_version():
-    """Ollama API: Get version"""
-    if SERVER_MODE != "ollama":
-        return jsonify({"error": "Endpoint not available in current mode"}), 404
-        
-    route_info = "GET /api/version - Ollama Version"
-    ui_manager.update_route(route_info)
-    
-    return jsonify({"version": "0.5.11"})
-
-@app.route('/api/ps', methods=['GET'])
-def ollama_list_running_models():
-    """Ollama API: List running models"""
-    if SERVER_MODE != "ollama":
-        return jsonify({"error": "Endpoint not available in current mode"}), 404
-        
-    route_info = "GET /api/ps - Ollama List Running Models"
-    ui_manager.update_route(route_info)
-    
-    try:
-        # Lấy tất cả models từ Qwen API (vì tất cả đều đang chạy theo mặc định)
-        qwen_models = get_cached_qwen_models()
-        
-        # Convert Qwen models to Ollama running format
-        from datetime import datetime, timedelta
-        
-        running_models = []
-        for model in qwen_models:
-            model_id = model.get('id', '')
-            if model_id:
-                # Tính thời gian hết hạn (30 phút từ bây giờ)
-                expires_at = (datetime.now() + timedelta(minutes=30)).isoformat() + "+07:00"
-                
-                # Thêm suffix :latest cho model name
-                model_name_with_latest = f"{model_id}:latest"
-                
-                running_models.append({
-                    "name": model_name_with_latest,
-                    "model": model_name_with_latest,
-                    "size": 6654289920,
-                    "digest": "365c0bd3c000a25d28ddbf732fe1c6add414de7275464c4e4d1c3b5fcb5d8ad1",
-                    "details": {
-                        "parent_model": "",
-                        "format": "gguf",
-                        "family": "qwen",
-                        "families": ["qwen"],
-                        "parameter_size": "235B",
-                        "quantization_level": "Q4_0"
-                    },
-                    "expires_at": expires_at,
-                    "size_vram": 6654289920
-                })
-        
-        return jsonify({"models": running_models})
-        
-    except Exception as e:
-        logger.error(f"Error listing running Ollama models: {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/api/show', methods=['POST'])
-@parse_json_request()
-def ollama_show_model():
-    """Ollama API: Show model details"""
-    if SERVER_MODE != "ollama":
-        return jsonify({"error": "Endpoint not available in current mode"}), 404
-        
-    data = request.json_data
-    model_name = data.get('name', '')
-    # Bỏ suffix :latest nếu có
-    if model_name.endswith(':latest'):
-        model_name = model_name[:-7]
-    
-    route_info = f"POST /api/show - Ollama Show Model ({model_name})"
-    ui_manager.update_route(route_info, data)
-    
-    try:
-        qwen_models = get_cached_qwen_models()
-        
-        # Find the specific model
-        target_model = None
-        for model in qwen_models:
-            if model.get('id') == model_name:
-                target_model = model
-                break
-        
-        if not target_model:
-            return jsonify({"error": f"Model {model_name} not found"}), 404
-        
-        # Convert to Ollama format
-        model_info = target_model.get('info', {})
-        meta = model_info.get('meta', {})
-        
-        ollama_model_info = {
-            "license": "Apache 2.0",
-            "modelfile": f"FROM {model_name}",
-            "parameters": str(meta.get('max_context_length', 131072)),
-            "template": "{{ .Prompt }}",
-            "system": "",
-            "details": {
-                "format": "gguf",
-                "family": "qwen",
-                "families": ["qwen"],
-                "parameter_size": str(meta.get('max_context_length', 131072)),
-                "quantization_level": "q4_0"
-            }
-        }
-        
-        return jsonify(ollama_model_info)
-        
-    except Exception as e:
-        logger.error(f"Error showing Ollama model {model_name}: {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/api/generate', methods=['POST'])
-@parse_json_request()
-def ollama_generate():
-    """Ollama API: Generate response"""
-    if SERVER_MODE != "ollama":
-        return jsonify({"error": "Endpoint not available in current mode"}), 404
-        
-    data = request.json_data
-    model = data.get('model', 'qwen3-235b-a22b')
-    prompt = data.get('prompt', '')
-    stream = data.get('stream', False)
-    
-    # Xử lý model name có suffix :latest
-    if model.endswith(':latest'):
-        model = model[:-7]  # Bỏ :latest
-    
-    route_info = f"POST /api/generate - Ollama Generate ({model}, stream: {stream})"
-
-    ui_manager.update_route(route_info, _make_display_data_short(data))
-    
-    # Convert Ollama format to OpenAI format
-    openai_data = {
-        "model": model,
-        "messages": [{"role": "user", "content": prompt}],
-        "stream": stream,
-        "temperature": data.get('temperature', 0.7),
-        "top_p": data.get('top_p', 1.0),
-        "max_tokens": data.get('num_predict', 1000)
-    }
-    
-    if stream:
-        return Response(
-            ollama_service.stream_ollama_response(openai_data),
-            mimetype='application/json',
-            headers={
-                'Cache-Control': 'no-cache',
-                'Connection': 'keep-alive'
-            }
-        )
-    else:
-        return ollama_service.stream_ollama_response_non_streaming(openai_data)
-
-@app.route('/api/chat', methods=['POST'])
-@parse_json_request()
-def ollama_chat():
-    """Ollama API: Chat endpoint"""
-    if SERVER_MODE != "ollama":
-        return jsonify({"error": "Endpoint not available in current mode"}), 404
-        
-    data = request.json_data
-    model = data.get('model', 'qwen3-235b-a22b')
-    messages = data.get('messages', [])
-    # Default stream là True, chỉ khi có "stream": false thì mới là non-streaming
-    stream = data.get('stream', True)
-    tools = data.get('tools', [])
-    
-    # Xử lý model name có suffix :latest
-    if model.endswith(':latest'):
-        model = model[:-7]  # Bỏ :latest
-    
-    route_info = f"POST /api/chat - Ollama Chat ({model}, stream: {stream})"
-
-    ui_manager.update_route(route_info, _make_display_data_short(data))
-    
-    # Parse tools thành text nếu có
-    if tools:
-        tools_text = parse_tools_to_text(tools)
-        # Thêm tools text vào message cuối cùng
-        if messages:
-            last_message = messages[-1]
-            if last_message.get('role') == 'user':
-                last_message['content'] = f"{last_message['content']}\n\nAvailable tools:\n{tools_text}"
-    
-    # Convert Ollama chat format to OpenAI format
-    openai_data = {
-        "model": model,
-        "messages": messages,
-        "stream": stream,
-        "temperature": data.get('temperature', 0.7),
-        "top_p": data.get('top_p', 1.0),
-        "max_tokens": data.get('num_predict', 1000)
-    }
-    
-    if stream:
-        return Response(
-            ollama_service.stream_ollama_response(openai_data),
-            mimetype='application/json',
-            headers={
-                'Cache-Control': 'no-cache',
-                'Connection': 'keep-alive'
-            }
-        )
-    else:
-        return ollama_service.stream_ollama_response_non_streaming(openai_data)
-
-def stream_qwen_response_with_queue(data):
-    """Stream response from Qwen API with queue system"""
-    model = data.get('model', 'qwen3-235b-a22b')
-    request_id = str(uuid.uuid4())
-        
-    # Đợi cho đến khi có thể xử lý với timeout
-    if not queue_manager.acquire_lock(request_id):
-        yield f"data: {json.dumps({'error': 'Server busy, request timed out'})}\n\n"
-        return
-    
-    try:
-        # Tạo request state cho request này
-        request_state = RequestState(request_id, model)
-        
-        # Update queue status: processing started, queue size from manager
-        try:
-            from utils.ui_manager import ui_manager as _ui
-            status = queue_manager.get_status()
-            _ui.update_queue_status(True, status.get('queue_size', 0))
-        except Exception:
-            pass
-
-        # Xử lý request hiện tại
-        for chunk in chat_service.stream_qwen_response(data, request_state):
-            yield chunk
-    
-    except Exception as e:
-        logger.error(f"Error in stream_qwen_response_with_queue: {e}")
-        yield f"data: {json.dumps({'error': f'Stream error: {str(e)}'})}\n\n"
-    finally:
-        # Đảm bảo lock được release
-        queue_manager.release_lock(request_id)
-        # Update queue status: processing stopped
-        try:
-            from utils.ui_manager import ui_manager as _ui
-            status = queue_manager.get_status()
-            _ui.update_queue_status(False, status.get('queue_size', 0))
-        except Exception:
-            pass
-
-def stream_qwen_response_non_streaming_with_queue(data):
-    """Non-streaming response from Qwen API with queue system"""
-    model = data.get('model', 'qwen3-235b-a22b')
-    request_id = str(uuid.uuid4())
-        
-    # Kiểm tra nếu có request đang xử lý
-    with queue_manager.chat_lock:
-        if queue_manager.current_processing:
-            return jsonify({
-                "error": {
-                    "message": "Server busy, please try again later",
-                    "type": "server_error",
-                    "code": "server_busy"
-                }
-            }), 503
-        else:
-            queue_manager.current_processing = True
-            queue_manager.current_processing_start_time = time.time()
-            # Update UI queue status
-            try:
-                from utils.ui_manager import ui_manager as _ui
-                status = queue_manager.get_status()
-                _ui.update_queue_status(True, status.get('queue_size', 0))
-            except Exception:
-                pass
-    
-    try:
-        # Xử lý request hiện tại
-        result = chat_service.stream_qwen_response_non_streaming(data)
-        
-        # Xử lý queue sau khi hoàn thành - đã được xử lý trong finally block
-        
-        return result
-    
-    except Exception as e:
-        logger.error(f"Error in stream_qwen_response_non_streaming_with_queue: {e}")
-        return jsonify({
-            "error": {
-                "message": f"Stream error: {str(e)}",
-                "type": "server_error"
-            }
-        }), 500
-    finally:
-        # Đảm bảo lock được release
-        queue_manager.release_lock(request_id)
-        # Update UI queue status
-        try:
-            from utils.ui_manager import ui_manager as _ui
-            status = queue_manager.get_status()
-            _ui.update_queue_status(False, status.get('queue_size', 0))
-        except Exception:
-            pass
+#! routes moved to controllers blueprints
 
 
 

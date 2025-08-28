@@ -1,0 +1,8 @@
+# Add directories or file patterns to ignore during indexing (e.g. foo/ or *.csv)
+main.build/
+main.dist/
+main.onefile-build/
+logs/
+__pycache__/
+build_nuitka.bat
+*.exe
