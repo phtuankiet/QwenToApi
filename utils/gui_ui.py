@@ -188,11 +188,10 @@ class GUIUI:
             # Responsive layout adjustments based on window size
             self._adjust_layout_for_size(new_width, new_height)
 
-                # Update status bar with window info, scale, and responsive indicator
+                # Update status bar with version, window info, scale, and responsive indicator
             if hasattr(self, 'window_info'):
-                responsive_indicator = "📱" if new_width < 900 else "🖥️" if new_width > 1200 else "💻"
                 scale_percent = int(self.ui_scale * 100)
-                self.window_info.config(text=f"{responsive_indicator} {new_width}x{new_height} • {scale_percent}%")
+                self.window_info.config(text=f"{new_width}x{new_height} • {scale_percent}%")
 
     def _adjust_layout_for_size(self, width, height):
         """Adjust layout based on window size"""
@@ -287,6 +286,7 @@ Ctrl+N    - New Chat
 Ctrl+M    - Show Models
 Ctrl+R    - Show Routes
 F1        - Show this help
+F2        - Show About
 F5        - Refresh status
 Escape    - Close popup windows
 
@@ -411,9 +411,15 @@ Escape    - Close popup windows
                                      font=('Helvetica', status_font_size))
         self.server_status.grid(row=0, column=1, padx=int(8 * scale), pady=int(3 * scale))
 
-        # Right side - window size info and UI scale
+        # Right side - version and window size info
+        try:
+            from config import VERSION
+            version_text = f"v{VERSION}"
+        except ImportError:
+            version_text = "v1.0.1"
+            
         self.window_info = ttk.Label(status_bar,
-                                   text="",
+                                   text=f"{version_text}",
                                    foreground="white",
                                    background=self.colors['secondary'],
                                    font=('Helvetica', status_font_size))
@@ -439,7 +445,13 @@ Escape    - Close popup windows
             return False
 
         self.root = tk.Tk()
-        self.root.title("QwenToApi | KhanhNguyen9872")
+        
+        # Set window title with version
+        try:
+            from config import VERSION
+            self.root.title(f"QwenToApi v{VERSION} | KhanhNguyen9872")
+        except ImportError:
+            self.root.title("QwenToApi | KhanhNguyen9872")
 
         # Make window responsive (this loads the UI scale)
         self._setup_responsive_window()
@@ -695,8 +707,15 @@ Escape    - Close popup windows
         header_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         header_frame.grid_columnconfigure(1, weight=1)  # Space between title and status
 
+        # Import version from config
+        try:
+            from config import VERSION
+            version_text = f"QwenToApi v{VERSION} | KhanhNguyen9872"
+        except ImportError:
+            version_text = "QwenToApi | KhanhNguyen9872"
+            
         ttk.Label(header_frame,
-                 text="QwenToApi | KhanhNguyen9872",
+                 text=version_text,
                  style='Header.TLabel').grid(row=0, column=0, padx=10, pady=5, sticky="w")
 
         self.status_label = ttk.Label(header_frame,
@@ -751,6 +770,11 @@ Escape    - Close popup windows
                   text="Show Routes",
                   style='Primary.TButton',
                   command=self._show_routes).grid(row=0, column=1, padx=5)
+
+        ttk.Button(action_frame,
+                  text="About",
+                  style='Secondary.TButton',
+                  command=self._show_about).grid(row=0, column=2, padx=5)
 
     def _create_main_tab(self):
         """Create the main tab with server status and route info"""
@@ -2510,9 +2534,15 @@ Use the Settings tab to configure the server mode.
 
             # Manually trigger the resize handler to update status bar
             if hasattr(self, 'window_info'):
+                try:
+                    from config import VERSION
+                    version_text = f"v{VERSION}"
+                except ImportError:
+                    version_text = "v1.0.1"
+                    
                 responsive_indicator = "📱" if width < 900 else "🖥️" if width > 1200 else "💻"
                 scale_percent = int(self.ui_scale * 100)
-                self.window_info.config(text=f"{responsive_indicator} {width}x{height} • {scale_percent}%")
+                self.window_info.config(text=f"{version_text} • {responsive_indicator} {width}x{height} • {scale_percent}%")
 
         except Exception as e:
             logger.error(f"Error triggering window resize update: {e}")
@@ -2651,6 +2681,51 @@ Use the Settings tab to configure the server mode.
 
         except Exception as e:
             logger.error(f"Error updating widget fonts: {e}")
+
+    def _show_about(self):
+        """Show about dialog with version and application info"""
+        try:
+            # Get version
+            try:
+                from config import VERSION
+                version_text = VERSION
+            except ImportError:
+                version_text = "1.0.1"
+            
+            about_text = f"""🎯 QwenToApi v{version_text}
+
+📋 Description:
+QwenToApi là server tùy chỉnh tích hợp với Qwen API, 
+hỗ trợ cả LM Studio và Ollama format.
+
+🚀 Features:
+• Dual Mode: LM Studio (port 1235) và Ollama (port 11434)
+• Think Mode: Hỗ trợ tính năng suy nghĩ của Qwen
+• Image Support: Xử lý hình ảnh base64 (Ollama mode)
+• Queue System: Hệ thống xếp hàng xử lý request
+• Background Mode: Chạy server trong background
+
+👨‍💻 Developer: KhanhNguyen9872
+🌐 License: MIT License
+
+📞 Support:
+GitHub: https://github.com/khanhnguyen9872/custom_server_lmstudio
+
+🔄 Keyboard Shortcuts:
+Ctrl+S    - Start Server
+Ctrl+Q    - Stop Server
+Ctrl+N    - New Chat
+Ctrl+M    - Show Models
+Ctrl+R    - Show Routes
+F1        - Show Help
+F5        - Refresh Status
+Escape    - Close Popups"""
+            
+            self._show_help_window(about_text)
+            
+        except Exception as e:
+            logger.error(f"Error showing about dialog: {e}")
+            messagebox.showerror("Error", f"Failed to show about dialog: {str(e)}")
 
     def _show_help_window(self, help_text):
         """Show help window with keyboard shortcuts"""
