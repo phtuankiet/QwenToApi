@@ -491,35 +491,6 @@ def internal_error(error):
         }
     }), 500
 
-@app.route('/v1/completions', methods=['POST'])
-def completions():
-    """Text completions (deprecated)"""
-    data = request.get_json() or {}
-    route_info = "POST /v1/completions - Deprecated"
-    ui_manager.update_route(route_info, data)
-    
-    return jsonify({
-        "error": {
-            "message": "This endpoint is deprecated. Use /v1/chat/completions instead.",
-            "type": "invalid_request_error",
-            "code": "deprecated_endpoint"
-        }
-    }), 400
-
-@app.route('/v1/embeddings', methods=['POST'])
-def embeddings():
-    """Text embeddings"""
-    data = request.get_json() or {}
-    route_info = "POST /v1/embeddings - Not Supported"
-    ui_manager.update_route(route_info, data)
-    
-    return jsonify({
-        "error": {
-            "message": "Embeddings not supported in this server",
-            "type": "invalid_request_error",
-            "code": "not_supported"
-        }
-    }), 400
 
 if __name__ == '__main__':
     # Parse arguments first

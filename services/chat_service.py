@@ -423,6 +423,84 @@ class ChatService:
             })
         }
         return openai_response
+
+    def _collect_full_content_via_stream(self, data, model):
+        """Fallback: gọi Qwen ở chế độ streaming để gom full content cho non-streaming API."""
+        try:
+            # Sử dụng chat_id hiện tại hoặc tạo mới nếu chưa có
+            chat_id = chat_manager.get_current_chat_id()
+            if not chat_id:
+                chat_id = chat_manager.initialize_chat(model)
+                if not chat_id:
+                    return ""
+
+            parent_id = chat_manager.get_current_parent_id()
+            qwen_data = qwen_service.prepare_qwen_request({**data, "stream": True, "incremental_output": True}, chat_id, model, parent_id)
+
+            headers = build_header(QWEN_HEADERS)
+            import requests
+            response = requests.post(
+                f"{QWEN_CHAT_COMPLETIONS_URL}?chat_id={chat_id}",
+                headers=headers,
+                json=qwen_data,
+                stream=True,
+                timeout=300
+            )
+
+            if response.status_code != 200:
+                return ""
+
+            full_content = []
+            thinking_started = False
+
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                line_str = line.decode('utf-8')
+                if not line_str.startswith('data: '):
+                    continue
+                try:
+                    chunk = json.loads(line_str[6:])
+                except Exception:
+                    continue
+                if 'response.created' in chunk:
+                    # cập nhật parent/response id nếu có
+                    try:
+                        response_created = chunk['response.created']
+                        parent_id = response_created.get('parent_id')
+                        response_id = response_created.get('response_id')
+                        if parent_id and response_id:
+                            chat_manager.update_parent_info(parent_id, response_id)
+                    except Exception:
+                        pass
+                    continue
+                try:
+                    if chunk.get('choices') and chunk['choices'][0].get('delta'):
+                        delta = chunk['choices'][0]['delta']
+                        phase = delta.get('phase')
+                        content = delta.get('content')
+                        status = delta.get('status')
+                        if phase == 'think':
+                            if not thinking_started:
+                                full_content.append('<think>')
+                                thinking_started = True
+                            if content:
+                                full_content.append(content)
+                            if status == 'finished' and thinking_started:
+                                full_content.append('</think>')
+                                thinking_started = False
+                        else:
+                            if content:
+                                full_content.append(content)
+                        finish_reason = chunk['choices'][0].get('finish_reason')
+                        if finish_reason:
+                            break
+                except Exception:
+                    continue
+
+            return ''.join(full_content)
+        except Exception:
+            return ""
     
     def stream_qwen_response_non_streaming(self, data):
         """Non-streaming response from Qwen API"""
@@ -540,6 +618,16 @@ class ChatService:
                             user_text = str(m.get('content') or '')
                             break
                     assistant_text = result.get('choices', [{}])[0].get('message', {}).get('content', '')
+                    # Fallback nếu content rỗng: gom lại qua stream
+                    if not assistant_text:
+                        assistant_text = self._collect_full_content_via_stream(data, model)
+                        if assistant_text:
+                            # cập nhật vào result để trả về cho client theo OpenAI format
+                            try:
+                                result['choices'][0]['message']['content'] = assistant_text
+                                # usage tokens có thể không chính xác; giữ nguyên nếu có
+                            except Exception:
+                                pass
                     ui_manager.add_chat_messages(user_text, assistant_text)
                 except Exception:
                     pass

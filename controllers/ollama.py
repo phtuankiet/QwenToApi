@@ -61,6 +61,45 @@ def _make_display_data_short(data, max_len: int = 200):
         return data
 
 
+@ollama_bp.route('/v1/models', methods=['GET', 'OPTIONS'])
+def v1_list_models_shared():
+    app = current_app
+    get_cached_qwen_models = app.config['get_cached_qwen_models']
+    SERVER_MODE = app.config.get('SERVER_MODE')
+
+    if request.method == 'OPTIONS':
+        response = Response()
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+        return response
+
+    route_info = "GET /v1/models - List Models (shared)"
+
+    models = get_cached_qwen_models()
+
+    if SERVER_MODE == "ollama":
+        formatted_models = []
+        for model in models:
+            model_id = model.get('id', '')
+            if model_id:
+                model_name_with_latest = f"{model_id}:latest"
+                formatted_models.append({
+                    "id": model_name_with_latest,
+                    "object": "model",
+                    "created": int(__import__('time').time()),
+                    "owned_by": "library"
+                })
+    else:
+        formatted_models = models
+
+    response = jsonify({
+        "object": "list",
+        "data": formatted_models
+    })
+    response.headers['Content-Type'] = 'application/json'
+    return response
+
 @ollama_bp.route('/api/tags', methods=['GET'])
 def ollama_list_models():
     app = current_app
@@ -68,12 +107,8 @@ def ollama_list_models():
     if SERVER_MODE != "ollama":
         return jsonify({"error": "Endpoint not available in current mode"}), 404
 
-    ui_manager = app.config['ui_manager']
     get_cached_qwen_models = app.config['get_cached_qwen_models']
     logger = app.config['logger']
-
-    route_info = "GET /api/tags - Ollama List Models"
-    ui_manager.update_route(route_info)
 
     try:
         qwen_models = get_cached_qwen_models()
@@ -114,9 +149,6 @@ def ollama_version():
     if SERVER_MODE != "ollama":
         return jsonify({"error": "Endpoint not available in current mode"}), 404
 
-    ui_manager = app.config['ui_manager']
-    route_info = "GET /api/version - Ollama Version"
-    ui_manager.update_route(route_info)
     return jsonify({"version":"0.11.7"})
 
 
@@ -127,12 +159,8 @@ def ollama_list_running_models():
     if SERVER_MODE != "ollama":
         return jsonify({"error": "Endpoint not available in current mode"}), 404
 
-    ui_manager = app.config['ui_manager']
     get_cached_qwen_models = app.config['get_cached_qwen_models']
     logger = app.config['logger']
-
-    route_info = "GET /api/ps - Ollama List Running Models"
-    ui_manager.update_route(route_info)
 
     try:
         qwen_models = get_cached_qwen_models()
@@ -173,7 +201,6 @@ def ollama_show_model():
     if SERVER_MODE != "ollama":
         return jsonify({"error": "Endpoint not available in current mode"}), 404
 
-    ui_manager = app.config['ui_manager']
     get_cached_qwen_models = app.config['get_cached_qwen_models']
     logger = app.config['logger']
 
@@ -181,9 +208,6 @@ def ollama_show_model():
     model_name = data.get('name', '')
     if model_name.endswith(':latest'):
         model_name = model_name[:-7]
-
-    route_info = f"POST /api/show - Ollama Show Model ({model_name})"
-    ui_manager.update_route(route_info, data)
 
     try:
         qwen_models = get_cached_qwen_models()
@@ -398,14 +422,9 @@ def ollama_delete_model():
     if SERVER_MODE != "ollama":
         return jsonify({"error": "Endpoint not available in current mode"}), 404
 
-    ui_manager = app.config['ui_manager']
     data = request.json_data or {}
     model = data.get('model', '')
 
-    route_info = "DELETE /api/delete - Ollama Delete Model"
-    ui_manager.update_route(route_info, {"model": model})
-
-    # As requested, always return 404 Not Found for now
     return jsonify({"error": f"model '{model}' not found"}), 404
 
 
@@ -417,14 +436,6 @@ def ollama_pull_model():
     if SERVER_MODE != "ollama":
         return jsonify({"error": "Endpoint not available in current mode"}), 404
 
-    ui_manager = app.config['ui_manager']
-    data = request.json_data or {}
-    model = data.get('model', '')
-
-    route_info = "POST /api/pull - Ollama Pull Model"
-    ui_manager.update_route(route_info, {"model": model})
-
-    # Stubbed behavior: acknowledge pull request
     return jsonify({"status": "pulling manifest"})
 
 
@@ -436,16 +447,6 @@ def ollama_push_model():
     if SERVER_MODE != "ollama":
         return jsonify({"error": "Endpoint not available in current mode"}), 404
 
-    ui_manager = app.config['ui_manager']
-    data = request.json_data or {}
-    model = data.get('model', '')
-    insecure = data.get('insecure', False)
-    stream = data.get('stream', True)
-
-    route_info = "POST /api/push - Ollama Push Model"
-    ui_manager.update_route(route_info, {"model": model, "insecure": insecure, "stream": stream})
-
-    # Stubbed behavior: acknowledge push request
     return jsonify({"status": "success"})
 
 
@@ -457,14 +458,8 @@ def ollama_create_model():
     if SERVER_MODE != "ollama":
         return jsonify({"error": "Endpoint not available in current mode"}), 404
 
-    ui_manager = app.config['ui_manager']
     data = request.json_data or {}
-    model = data.get('model', '')
-    modelfile = data.get('modelfile', '')
     quantize = data.get('quantize')
-
-    route_info = "POST /api/create - Ollama Create Model"
-    ui_manager.update_route(route_info, {"model": model, "quantize": quantize is not None})
 
     import json as _json
 
@@ -495,18 +490,11 @@ def ollama_embed():
     if SERVER_MODE != "ollama":
         return jsonify({"error": "Endpoint not available in current mode"}), 404
 
-    ui_manager = app.config['ui_manager']
     data = request.json_data or {}
     model = data.get('model', '')
     inp = data.get('input', [])
     if isinstance(inp, str):
         inp = [inp]
-    truncate = data.get('truncate')
-    options = data.get('options') or {}
-    keep_alive = data.get('keep_alive')
-
-    route_info = "POST /api/embed - Ollama Embeddings"
-    ui_manager.update_route(route_info, {"model": model, "count": len(inp)})
 
     # Generate deterministic pseudo-embeddings per input (non-zero, stable)
     import time as _t, hashlib, random

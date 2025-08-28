@@ -26,23 +26,16 @@ def _make_display_data_short(data, max_len: int = 200):
 @lmstudio_bp.route('/v1/models', methods=['GET', 'OPTIONS'])
 def list_models():
     app = current_app
-    ui_manager = app.config['ui_manager']
-    qwen_service = app.config['qwen_service']
     get_cached_qwen_models = app.config['get_cached_qwen_models']
     SERVER_MODE = app.config.get('SERVER_MODE')
 
     if request.method == 'OPTIONS':
-        route_info = "OPTIONS /v1/models - List Models"
-        ui_manager.update_route(route_info)
-
         response = Response()
         response.headers['Access-Control-Allow-Origin'] = '*'
         response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
         response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
         return response
 
-    route_info = "GET /v1/models - List Models"
-    ui_manager.update_route(route_info)
 
     models = get_cached_qwen_models()
 
@@ -76,12 +69,8 @@ def get_model(model_id):
     if SERVER_MODE != "lmstudio":
         return jsonify({"error": "Endpoint not available in current mode"}), 404
 
-    ui_manager = app.config['ui_manager']
     get_cached_qwen_models = app.config['get_cached_qwen_models']
     logger = app.config['logger']
-
-    route_info = f"GET /v1/models/{model_id} - Get Model Info"
-    ui_manager.update_route(route_info)
 
     try:
         qwen_models = get_cached_qwen_models()
@@ -167,6 +156,7 @@ def get_model(model_id):
 @lmstudio_bp.route('/v1/chat/completions', methods=['POST'])
 def chat_completions():
     app = current_app
+    app_obj = current_app._get_current_object()
     ui_manager = app.config['ui_manager']
     chat_service = app.config['chat_service']
     queue_manager = app.config['queue_manager']
@@ -187,18 +177,102 @@ def chat_completions():
 
     def stream_qwen_response_with_queue(data):
         request_id = str(uuid.uuid4())
-        if not queue_manager.acquire_lock(request_id):
+        if not queue_manager.acquire_lock(request_id, data):
             yield f"data: {{\"error\": \"Server busy, request timed out\"}}\n\n"
             return
         try:
             request_state = RequestState(request_id, model)
+            # Prepare client-facing fields
+            server_mode = SERVER_MODE
+            model_out = f"{model}:latest" if server_mode == "ollama" and not str(model).endswith(":latest") else model
+            system_fingerprint = "fp_ollama"
+            # Stable short id per request
+            import time as _time, json as _json
+            created_ts = int(_time.time())
+            completion_id = f"chatcmpl-{int(_time.time()*1000)%1000}"
             try:
                 status = queue_manager.get_status()
                 ui_manager.update_queue_status(True, status.get('queue_size', 0))
             except Exception:
                 pass
-            for chunk in chat_service.stream_qwen_response(data, request_state):
-                yield chunk
+            with app_obj.app_context():
+                sent_done = False
+                saw_stop = False
+                for chunk in chat_service.stream_qwen_response(data, request_state):
+                    try:
+                        line = chunk.decode('utf-8') if isinstance(chunk, (bytes, bytearray)) else str(chunk)
+                        if not line.startswith('data: '):
+                            continue
+                        payload = line[6:].strip()
+                        if payload == '[DONE]':
+                            # If upstream didn't send a final stop chunk, synthesize one
+                            if not saw_stop:
+                                out = {
+                                    "id": completion_id,
+                                    "object": "chat.completion.chunk",
+                                    "created": created_ts,
+                                    "model": model_out,
+                                    "system_fingerprint": system_fingerprint,
+                                    "choices": [{
+                                        "index": 0,
+                                        "delta": {
+                                            "role": "assistant",
+                                            "content": ""
+                                        },
+                                        "logprobs": None,
+                                        "finish_reason": "stop"
+                                    }]
+                                }
+                                yield 'data: ' + _json.dumps(out) + '\n\n'
+                            yield 'data: [DONE]\n\n'
+                            sent_done = True
+                            break
+                        obj = _json.loads(payload)
+                        # Extract delta content and finish_reason
+                        delta = ((obj.get('choices') or [{}])[0].get('delta')) or {}
+                        finish_reason = (obj.get('choices') or [{}])[0].get('finish_reason')
+                        if finish_reason == 'stop':
+                            saw_stop = True
+                        out = {
+                            "id": completion_id,
+                            "object": "chat.completion.chunk",
+                            "created": created_ts,
+                            "model": model_out,
+                            "system_fingerprint": system_fingerprint,
+                            "choices": [{
+                                "index": 0,
+                                "delta": {
+                                    "role": "assistant",
+                                    "content": delta.get('content', '')
+                                },
+                                "logprobs": None,
+                                "finish_reason": finish_reason
+                            }]
+                        }
+                        yield 'data: ' + _json.dumps(out) + '\n\n'
+                    except Exception:
+                        # Fallback raw
+                        yield chunk
+                if not sent_done:
+                    if not saw_stop:
+                        out = {
+                            "id": completion_id,
+                            "object": "chat.completion.chunk",
+                            "created": created_ts,
+                            "model": model_out,
+                            "system_fingerprint": system_fingerprint,
+                            "choices": [{
+                                "index": 0,
+                                "delta": {
+                                    "role": "assistant",
+                                    "content": ""
+                                },
+                                "logprobs": None,
+                                "finish_reason": "stop"
+                            }]
+                        }
+                        yield 'data: ' + _json.dumps(out) + '\n\n'
+                    yield 'data: [DONE]\n\n'
         except Exception as e:
             logger.error(f"Error in stream_qwen_response_with_queue: {e}")
             yield f"data: {{\"error\": \"Stream error: {str(e)}\"}}\n\n"
@@ -212,20 +286,17 @@ def chat_completions():
 
     def stream_qwen_response_non_streaming_with_queue(data):
         request_id = str(uuid.uuid4())
-        with queue_manager.chat_lock:
-            if queue_manager.current_processing:
-                return jsonify({"error": {"message": "Server busy, please try again later", "type": "server_error", "code": "server_busy"}}), 503
-            else:
-                queue_manager.current_processing = True
-                import time as _t
-                queue_manager.current_processing_start_time = _t.time()
-                try:
-                    status = queue_manager.get_status()
-                    ui_manager.update_queue_status(True, status.get('queue_size', 0))
-                except Exception:
-                    pass
+        if not queue_manager.acquire_lock(request_id, data):
+            return jsonify({"error": {"message": "Server busy, please try again later", "type": "server_error", "code": "server_busy"}}), 503
         try:
+            try:
+                status = queue_manager.get_status()
+                ui_manager.update_queue_status(True, status.get('queue_size', 0))
+            except Exception:
+                pass
             result = chat_service.stream_qwen_response_non_streaming(data)
+            if SERVER_MODE == "ollama":
+                result['model'] = model + ":latest"
             return result
         except Exception as e:
             logger.error(f"Error in stream_qwen_response_non_streaming_with_queue: {e}")
@@ -237,10 +308,169 @@ def chat_completions():
                 ui_manager.update_queue_status(False, status.get('queue_size', 0))
             except Exception:
                 pass
-
+                
     if stream:
         return Response(stream_qwen_response_with_queue(data), mimetype='text/plain', headers={'Cache-Control': 'no-cache', 'Connection': 'keep-alive', 'Content-Type': 'text/event-stream'})
     else:
         return stream_qwen_response_non_streaming_with_queue(data)
+
+
+@lmstudio_bp.route('/v1/completions', methods=['POST'])
+@parse_json_request()
+def v1_completions_shared():
+    app = current_app
+    app_obj = current_app._get_current_object()
+    ui_manager = app.config['ui_manager']
+    chat_service = app.config['chat_service']
+    server_mode = app.config.get('SERVER_MODE')
+
+    data = request.json_data or {}
+    model = data.get('model', 'qwen3-235b-a22b')
+    prompt = data.get('prompt', '')
+    stream = data.get('stream', False)
+    if server_mode == "ollama" and isinstance(model, str) and model.endswith(':latest'):
+        model = model[:-7]
+
+    route_info = f"POST /v1/completions - Text Completions ({model}, stream: {stream})"
+    ui_manager.update_route(route_info, _make_display_data_short(data))
+
+    openai_data = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": stream,
+        "temperature": (data.get('options') or {}).get('temperature', 0.7),
+        "top_p": (data.get('options') or {}).get('top_p', 1.0),
+        "max_tokens": (data.get('options') or {}).get('num_predict', 1000)
+    }
+
+    system_fingerprint = "fp_ollama"
+    model_out = f"{model}:latest" if server_mode == "ollama" and not str(model).endswith(":latest") else model
+
+    if stream:
+        import json as _json, time as _time
+        created_ts = int(_time.time())
+        completion_id = f"cmpl-{int(_time.time()*1000) % 1000}"
+
+        def _to_sse():
+            with app_obj.app_context():
+                for line in chat_service.stream_qwen_response(openai_data):
+                    try:
+                        obj = _json.loads(line[6:]) if isinstance(line, (str, bytes)) and str(line).startswith('data: ') else _json.loads(line)
+                    except Exception:
+                        continue
+                    text_piece = ''
+                    try:
+                        delta = (obj.get('choices') or [{}])[0].get('delta') or {}
+                        text_piece = delta.get('content') or ''
+                    except Exception:
+                        text_piece = ''
+                    finish_reason = (obj.get('choices') or [{}])[0].get('finish_reason')
+                    out = {
+                        "id": completion_id,
+                        "object": "text_completion",
+                        "created": created_ts,
+                        "choices": [{"text": text_piece, "index": 0, "finish_reason": finish_reason}],
+                        "model": model_out,
+                        "system_fingerprint": system_fingerprint
+                    }
+                    yield "data: " + _json.dumps(out) + "\n\n"
+                yield "data: [DONE]\n\n"
+
+        return Response(_to_sse(), mimetype='text/event-stream', headers={'Cache-Control': 'no-cache', 'Connection': 'keep-alive'})
+
+    # Non-streaming
+    service_resp = chat_service.stream_qwen_response_non_streaming(openai_data)
+    # Normalize tuple (data, status) to dict
+    if isinstance(service_resp, tuple) and len(service_resp) >= 1:
+        service_resp = service_resp[0]
+    created_at = int(__import__('time').time())
+    # service_resp is OpenAI-style chat completion; extract full content
+    try:
+        content = ((service_resp.get('choices') or [{}])[0].get('message') or {}).get('content', '')
+        usage_obj = service_resp.get('usage') or {}
+    except Exception:
+        content, usage_obj = '', {}
+    usage = {
+        "prompt_tokens": int(usage_obj.get('prompt_tokens', 0)),
+        "completion_tokens": int(usage_obj.get('completion_tokens', 0)),
+        "total_tokens": int(usage_obj.get('total_tokens', 0))
+    }
+    non_stream_out = {
+        "id": f"cmpl-{int(__import__('time').time()*1000) % 1000}",
+        "object": "text_completion",
+        "created": created_at,
+        "model": model_out,
+        "system_fingerprint": system_fingerprint,
+        "choices": [{"text": content, "index": 0, "finish_reason": "stop"}],
+        "usage": usage
+    }
+    return jsonify(non_stream_out)
+
+
+@lmstudio_bp.route('/v1/embeddings', methods=['POST'])
+@parse_json_request()
+def v1_embeddings():
+    app = current_app
+    server_mode = app.config.get('SERVER_MODE')
+
+    data = request.json_data or {}
+    model = data.get('model', '')
+    inp = data.get('input', [])
+    options = data.get('options') or {}
+    truncate = options.get('truncate')
+
+    # Normalize input shape
+    if isinstance(inp, str):
+        inp = [inp]
+
+    # Internal model normalization: strip :latest only in ollama mode for internal use
+    effective_model = model
+    if server_mode == "ollama" and isinstance(effective_model, str) and effective_model.endswith(':latest'):
+        effective_model = effective_model[:-7]
+
+    # Deterministic pseudo-embeddings similar to ollama /api/embed
+    import time as _t, hashlib, random
+    start_ns = _t.perf_counter_ns()
+    dim = 768
+
+    def _embed_text(text: str):
+        seed_bytes = hashlib.sha256(text.encode('utf-8', 'ignore')).digest()
+        seed_int = int.from_bytes(seed_bytes[:8], 'big', signed=False)
+        rnd = random.Random(seed_int)
+        return [rnd.uniform(-0.05, 0.05) for _ in range(dim)]
+
+    # Apply optional truncate hint (no-op for now; placeholder for parity)
+    texts = inp
+    if truncate is True:
+        # Simple safe cap to emulate truncation behavior (does not affect determinism much)
+        texts = [s if not isinstance(s, str) else s[:8192] for s in texts]
+
+    embeddings = [_embed_text(s if isinstance(s, str) else str(s)) for s in texts]
+
+    # Usage estimates (prompt tokens ~= whitespace-separated tokens)
+    try:
+        prompt_tokens = sum(len(str(x).split()) for x in texts)
+    except Exception:
+        prompt_tokens = 0
+
+    total_duration = _t.perf_counter_ns() - start_ns
+    _ = total_duration  # kept for parity; not exposed in OpenAI embedding response
+
+    # Response model name per mode convention
+    if server_mode == "ollama":
+        model_out = model if (isinstance(model, str) and model.endswith(':latest')) else (f"{effective_model}:latest" if effective_model else "")
+    else:
+        # LMStudio mode: no :latest suffix
+        model_out = effective_model
+
+    return jsonify({
+        "object": "list",
+        "data": [
+            {"object": "embedding", "embedding": emb, "index": idx}
+            for idx, emb in enumerate(embeddings)
+        ],
+        "model": model_out,
+        "usage": {"prompt_tokens": int(prompt_tokens), "total_tokens": int(prompt_tokens)}
+    })
 
 
