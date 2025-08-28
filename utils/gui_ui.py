@@ -1035,7 +1035,7 @@ Escape    - Close popup windows
                   command=self._refresh_model_cache).grid(row=0, column=0, sticky="w", padx=5)
 
         ttk.Button(bottom_save_frame,
-                  text="Apply Configuration",
+                  text="Save",
                   style='Primary.TButton',
                   command=self._apply_configuration).grid(row=0, column=1, sticky="e", padx=5)
     

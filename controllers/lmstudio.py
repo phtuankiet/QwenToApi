@@ -185,7 +185,7 @@ def chat_completions():
             # Prepare client-facing fields
             server_mode = SERVER_MODE
             model_out = f"{model}:latest" if server_mode == "ollama" and not str(model).endswith(":latest") else model
-            system_fingerprint = "fp_ollama"
+            system_fingerprint = "fp_ollama" if server_mode == "ollama" else model
             # Stable short id per request
             import time as _time, json as _json
             created_ts = int(_time.time())
@@ -295,8 +295,20 @@ def chat_completions():
             except Exception:
                 pass
             result = chat_service.stream_qwen_response_non_streaming(data)
+            
+            # Handle tuple return (data, status) from service
+            if isinstance(result, tuple) and len(result) >= 1:
+                result = result[0]
+            
+            # Format response for LMStudio mode
             if SERVER_MODE == "ollama":
                 result['model'] = model + ":latest"
+                result['system_fingerprint'] = "fp_ollama"
+            else:
+                # LMStudio mode - use exact format
+                result['system_fingerprint'] = model
+                result['stats'] = {}
+                
             return result
         except Exception as e:
             logger.error(f"Error in stream_qwen_response_non_streaming_with_queue: {e}")
@@ -343,7 +355,7 @@ def v1_completions_shared():
         "max_tokens": (data.get('options') or {}).get('num_predict', 1000)
     }
 
-    system_fingerprint = "fp_ollama"
+    system_fingerprint = "fp_ollama" if server_mode == "ollama" else model
     model_out = f"{model}:latest" if server_mode == "ollama" and not str(model).endswith(":latest") else model
 
     if stream:
@@ -404,6 +416,11 @@ def v1_completions_shared():
         "choices": [{"text": content, "index": 0, "finish_reason": "stop"}],
         "usage": usage
     }
+    
+    # Add stats field for LMStudio mode
+    if server_mode != "ollama":
+        non_stream_out['stats'] = {}
+    
     return jsonify(non_stream_out)
 
 
