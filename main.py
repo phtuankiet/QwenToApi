@@ -434,11 +434,11 @@ def ask_server_mode():
         app.config['SERVER_MODE'] = SERVER_MODE
         if SERVER_MODE == "lmstudio":
             if not BACKGROUND_MODE:
-                print("✅ Đã chọn LM Studio Mode - Port 1235")
+                print("Đã chọn LM Studio - port 1235")
             return 1235
         else:
             if not BACKGROUND_MODE:
-                print("✅ Đã chọn Ollama Mode - Port 11434")
+                print("Đã chọn Ollama - port 11434")
             return 11434
     
     # Nếu có argument --port, xác định mode dựa trên port
@@ -465,31 +465,28 @@ def ask_server_mode():
         app.config['SERVER_MODE'] = SERVER_MODE
         return 1235
     
-    # Hỏi người dùng chọn mode nếu không có argument
     print("\n" + "="*50)
-    print("🤖 CUSTOM SERVER - CHỌN MODE")
+    print("chọn mode")
+    print("1. ollama")
+    print("2. lm studio")
     print("="*50)
-    print("1. LM Studio Mode (port 1235)")
-    print("2. Ollama Mode (port 11434)")
-    print("="*50)
-    
     while True:
         try:
-            choice = input("Chọn mode (1 hoặc 2): ").strip()
+            choice = input("chọn: ").strip()
             if choice == "1":
-                SERVER_MODE = "lmstudio"
-                app.config['SERVER_MODE'] = SERVER_MODE
-                print("✅ Đã chọn LM Studio Mode - Port 1235")
-                return 1235
-            elif choice == "2":
                 SERVER_MODE = "ollama"
                 app.config['SERVER_MODE'] = SERVER_MODE
-                print("✅ Đã chọn Ollama Mode - Port 11434")
+                print("Đã chọn Ollama - port 11434")
                 return 11434
+            elif choice == "2":
+                SERVER_MODE = "lmstudio"
+                app.config['SERVER_MODE'] = SERVER_MODE
+                print("Đã chọn LM Studio - port 1235")
+                return 1235
             else:
-                print("❌ Vui lòng chọn 1 hoặc 2")
+                print("vui lòng chọn 1 hoặc 2")
         except KeyboardInterrupt:
-            print("\n🛑 Thoát chương trình")
+            print("\nthoát")
             sys.exit(0)
 
 #! routes moved to controllers blueprints
@@ -514,51 +511,16 @@ def internal_error(error):
 
 
 if __name__ == '__main__':
-    # Parse arguments first
     args = parse_arguments()
-    
-    # Set background mode if specified
     if args.background:
         BACKGROUND_MODE = True
-    
-    # Only GUI UI supported; exit if cannot initialize
+    port = ask_server_mode()
+    host = args.host or '0.0.0.0'
+    app.config['SERVER_MODE'] = SERVER_MODE
     if not BACKGROUND_MODE:
-        try:
-            from utils.gui_ui import gui_ui
-            if not gui_ui.is_display_available():
-                logger.error("DISPLAY not available. GUI UI is required. Exiting.")
-                raise SystemExit(1)
-
-            # Set mode and port if specified in args
-            if args.mode:
-                port = 1235 if args.mode == "lmstudio" else 11434
-                gui_ui.mode = args.mode
-                gui_ui.port = port
-            elif args.port:
-                # Determine mode from port
-                mode = "lmstudio" if args.port == 1235 else "ollama" if args.port == 11434 else None
-                if mode:
-                    gui_ui.mode = mode
-                    gui_ui.port = args.port
-
-            # Initialize GUI but don't start it yet
-            if gui_ui.initialize():
-                logger.info("GUI UI initialized successfully")
-
-                # Register GUI with UI manager
-                ui_manager.set_ui(gui_ui, 'gui')
-
-                # Auto-start server if requested
-                if args.start:
-                    gui_ui._start_server()
-
-                # Start GUI in main thread (this will block)
-                gui_ui.run_main_loop()
-            else:
-                logger.error("Failed to initialize GUI UI. Exiting.")
-                raise SystemExit(1)
-        except SystemExit:
-            raise
-        except Exception as e:
-            logger.error(f"Error initializing GUI: {e}")
-            raise SystemExit(1)
+        print("server đang chạy")
+        print(f"mode: {SERVER_MODE}")
+        print(f"host: {host}")
+        print(f"port: {port}")
+        print("truy cập: http://0.0.0.0:" + str(port))
+    app.run(host=host, port=port, threaded=True)
