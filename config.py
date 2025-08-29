@@ -2,7 +2,7 @@ import uuid
 x_request_id = str(uuid.uuid4())
 
 # Application version
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 
 # URLs
 QWEN_API_BASE = "https://chat.qwen.ai/api"
