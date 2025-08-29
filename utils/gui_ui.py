@@ -449,7 +449,7 @@ Escape    - Close popup windows
         # Set window title with version
         try:
             from config import VERSION
-            self.root.title(f"QwenToApi v{VERSION} | KhanhNguyen9872")
+            self.root.title(f"QwenToApi | KhanhNguyen9872")
         except ImportError:
             self.root.title("QwenToApi | KhanhNguyen9872")
 
