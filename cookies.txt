@@ -1,0 +1,66 @@
+[
+  {
+    "name": "_c_WBKFRo",
+    "value": "249MS2Ju8HFOOhlddPB3vFzvJlyNiC5P06dqb2w0"
+  },
+  {
+    "name": "_gcl_au",
+    "value": "1.1.837857795.1756446964.1808740331.1756447000.1756447000"
+  },
+  {
+    "name": "xlly_s",
+    "value": "1"
+  },
+  {
+    "name": "_bl_uid",
+    "value": "1Lm25es1wn9f0n6Cp8nqiUp5nzRF"
+  },
+  {
+    "name": "cnaui",
+    "value": "66e383bd-1da9-4b7f-8246-e8d5948c3735"
+  },
+  {
+    "name": "isg",
+    "value": "BDg4XeaCpCoK-ciuYmz9Ssu0CebKoZwrNOEUw3KptHMmjdh3GrAwu9WvQZ093VQD"
+  },
+  {
+    "name": "ssxmod_itna2",
+    "value": "mqIxBiiQG=i=oDKi7Ehx7KGK5iQ0=DpgxBP01GCDuxiK08D6DYqGdeuo2Lwoz=dOz+rY9GQ=KjweGIKxOWuvi1SmibsDPbAB+PbhFP+D"
+  },
+  {
+    "name": "sca",
+    "value": "9c9b2d15"
+  },
+  {
+    "name": "acw_tc",
+    "value": "0a03e54317564723292645288e2c64e1932c96428e3e6b570cb40e1eda7181"
+  },
+  {
+    "name": "atpsida",
+    "value": "2bf82757e2d489eea823ed5a_1756472330_1"
+  },
+  {
+    "name": "aui",
+    "value": "66e383bd-1da9-4b7f-8246-e8d5948c3735"
+  },
+  {
+    "name": "cna",
+    "value": "9S44IZrPgXkCAaC/7SH1ODIf"
+  },
+  {
+    "name": "ssxmod_itna",
+    "value": "mqIxBiiQG=i=oDKi7Ehx7KGK5iQ0=DpgxBP01GCDuxiK08D6DYqGdeuo2Lwoz=dOz+rY9GQ=KjwW4DlpA2YD9xY6HDj4GTwzpoKm1dlDg2wI2lQY2AGQ19DRRc=gb7gdS9h5w1qygHnlhPKoIrDB3ED06hKhGrDYALDBYD74G+DDeDiobDzwTDtqD9DxDFUj3DfdnFmD2dTAIOGiTDIfeEUDDSAPDnm7PiDiUdxGYiI4G2DEFWgDDZeITDbrTYDDNYRK4DK44+LW8E=cFCycHG5zpGp43hpzEtx1ndxYoerzK=wHWimz0QFbQR0YlbQQ0Y8iTWGx34eY0Nbb4D+z+0xoiKCBDCiqR0xTwH/BYDiTejmzoqQ7eMkz9qsw0wVg=RCo zhDxOx+OxKBQQ3o/7+eGDPOx4SY8C+=Gir7iqiDD"
+  },
+  {
+    "name": "tfstk",
+    "value": "goZjNk0cSIAbk8aKlcWyAYSXKUo_CTSEhdMTKRK2Bmnx1dNapVH20t4_P5PjM5wGnAhT65GauaSUn-miX6rfYMy0Km-NDoi9_8nmQlprzpIUn-vJ8QsYYMJsv6m-BfFtk4p-nbHxBnFt24HIwnH9DAdRFAc-XnHtXgK-IvYvWjFTeTMiwfntX5nRFAc-6cntpeKidnh_h9MBPMOd-jyxNhKTDZ0jOyYwXhE-hqZTHbw43uMjlX3OyGeQD7yT0o0lOBngUyN_WS5kXjzQemhzk_Knwycx0omMBE3z4REZ285vcja8i537ostqMVZ45qzhOecZWAgKX499X8wqG5HSvItIzuyTb0ePMnGbySqt0kBeSY0Tzo030_Kjvy2q0PFVZhh4R8n54A-EOvw95LgHfYGFFTTMSF80loyJOiC-kYDmMT6WRfRHXh80bTT9zqHoHnW5FeMf."
+  },
+  {
+    "name": "token",
+    "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY2ZTM4M2JkLTFkYTktNGI3Zi04MjQ2LWU4ZDU5NDhjMzczNSIsImxhc3RfcGFzc3dvcmRfY2hhbmdlIjoxNzU2NDQ3MDA2LCJleHAiOjE3NTcwNzcxMzB9.YFs8UpZUzvQ94fzi422FhXA1Nk7V-p5gfD1ShXtkzRk"
+  },
+  {
+    "name": "x-ap",
+    "value": "ap-southeast-1"
+  }
+]

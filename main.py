@@ -10,7 +10,6 @@ import argparse
 import sys
 import copy
 
-# Import các module đã tách
 from utils.logging_config import setup_logging
 from utils.queue_manager import queue_manager
 from utils.ui_manager import ui_manager
@@ -24,9 +23,7 @@ import threading
 from controllers.lmstudio import lmstudio_bp
 from controllers.ollama import ollama_bp
 
-# Parse command line arguments
 def parse_arguments():
-    """Parse command line arguments"""
     parser = argparse.ArgumentParser(description='Custom Server with Qwen API Integration')
     parser.add_argument('--background', action='store_true',
                        help='Run server in background mode (no terminal output)')
@@ -40,34 +37,26 @@ def parse_arguments():
                        help='Auto-start the server')
     return parser.parse_args()
 
-# Cấu hình Flask để trả về JSON đẹp
 app = Flask(__name__)
 app.config['JSONIFY_PRETTYPRINT_REGULAR'] = True
 
-# Cấu hình CORS để cho phép tất cả origin
 CORS(app, origins="*", supports_credentials=True)
 
-# Cấu hình để chấp nhận header request rất dài
-app.config['MAX_CONTENT_LENGTH'] = 2048 * 1024 * 1024  # 2GB
+app.config['MAX_CONTENT_LENGTH'] = 2048 * 1024 * 1024
 app.config['MAX_CONTENT_PATH'] = None
-app.config['MAX_COOKIE_SIZE'] = 2048 * 1024 * 1024  # 2GB
+app.config['MAX_COOKIE_SIZE'] = 2048 * 1024 * 1024
 
-# Tăng giới hạn cho request body
-app.config['MAX_CONTENT_LENGTH'] = None  # Không giới hạn
+app.config['MAX_CONTENT_LENGTH'] = None
 
-# Cấu hình thêm để xử lý request lớn
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 app.config['TEMPLATES_AUTO_RELOAD'] = True
 
-# Cấu hình để chấp nhận request không có Content-Type
 app.config['JSON_AS_ASCII'] = False
 app.config['JSONIFY_MIMETYPE'] = 'application/json'
 
-# Tắt kiểm tra Content-Type cho JSON
 app.config['JSONIFY_PRETTYPRINT_REGULAR'] = True
 app.config['JSON_SORT_KEYS'] = False
 
-# Expose shared services/state to controllers via app.config
 app.config.update({
     'ui_manager': ui_manager,
     'qwen_service': qwen_service,
@@ -78,28 +67,58 @@ app.config.update({
     'SERVER_MODE': None,
 })
 
-# Register blueprints
 app.register_blueprint(lmstudio_bp)
 app.register_blueprint(ollama_bp)
 
-# Tăng giới hạn JSON serialization
 import sys
-sys.setrecursionlimit(10000)  # Tăng recursion limit
+sys.setrecursionlimit(10000)
 
-# Global variables
 SERVER_MODE = None
 BACKGROUND_MODE = False
 args = None
 HTTP_SERVER = None
 HTTP_THREAD = None
 
-# Global models cache
 MODELS_CACHE = None
 MODELS_CACHE_TIME = None
 MODELS_CACHE_LOCK = threading.Lock()
 
+CHAT_IDS_FILE = 'chat_ids.json'
+CHAT_HISTORY_FILE = 'chat_history.json'
+
+def load_chat_ids():
+    try:
+        if os.path.exists(CHAT_IDS_FILE):
+            with open(CHAT_IDS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        return {}
+    except Exception:
+        return {}
+
+def save_chat_ids(chat_ids):
+    try:
+        with open(CHAT_IDS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(chat_ids, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+def load_chat_history():
+    try:
+        if os.path.exists(CHAT_HISTORY_FILE):
+            with open(CHAT_HISTORY_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        return {}
+    except Exception:
+        return {}
+
+def save_chat_history(chat_history):
+    try:
+        with open(CHAT_HISTORY_FILE, 'w', encoding='utf-8') as f:
+            json.dump(chat_history, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
 def get_cached_qwen_models(force_refresh: bool = False):
-    """Lấy danh sách models từ cache toàn cục; chỉ gọi Qwen 1 lần trừ khi refresh."""
     global MODELS_CACHE, MODELS_CACHE_TIME
     try:
         with MODELS_CACHE_LOCK:
@@ -112,59 +131,46 @@ def get_cached_qwen_models(force_refresh: bool = False):
         logger.error(f"Error getting cached models: {e}")
         return MODELS_CACHE or []
 
-# Make cached models accessor available to controllers
 app.config['get_cached_qwen_models'] = get_cached_qwen_models
 
-# Parse arguments first
 args = parse_arguments()
 
-# Setup logging based on background mode
 def setup_logging_with_background():
-    """Setup logging based on background mode"""
     global BACKGROUND_MODE
     if args.background:
         BACKGROUND_MODE = True
-        # Redirect all output to null in background mode
         import os
         import sys
         
-        # Redirect stdout and stderr to null
-        if os.name == 'nt':  # Windows
+        if os.name == 'nt':
             null_device = 'NUL'
-        else:  # Unix/Linux/Mac
+        else:
             null_device = '/dev/null'
         
-        # Open null device
         null_fd = os.open(null_device, os.O_RDWR)
         
-        # Redirect stdout and stderr
         os.dup2(null_fd, sys.stdout.fileno())
         os.dup2(null_fd, sys.stderr.fileno())
         
-        # Close the null device
         os.close(null_fd)
         
-        # Setup minimal logging for background mode
         logging.basicConfig(
-            level=logging.ERROR,  # Only log errors
+            level=logging.ERROR,
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
             handlers=[
-                logging.FileHandler(os.devnull, mode='w'),  # Log to null
-                logging.NullHandler()  # No console output
+                logging.FileHandler(os.devnull, mode='w'),
+                logging.NullHandler()
             ]
         )
         return logging.getLogger(__name__)
     else:
-        # Normal logging setup
         return setup_logging()
 
 logger = setup_logging_with_background()
 app.config['logger'] = logger
 
 def _ui_log(message: str, level: str = "info"):
-    """Log ra logger và cố gắng đẩy vào GUI Logs tab nếu khả dụng."""
     try:
-        # Ghi ra file/console theo level
         if level == "error":
             logger.error(message)
         elif level == "warning":
@@ -172,7 +178,6 @@ def _ui_log(message: str, level: str = "info"):
         else:
             logger.info(message)
 
-        # Đẩy vào UI nếu có
         try:
             ui = getattr(ui_manager, 'current_ui', None)
             if ui and hasattr(ui, 'log'):
@@ -182,9 +187,7 @@ def _ui_log(message: str, level: str = "info"):
     except Exception:
         pass
 
-# Embedded server control for GUI
 def start_embedded(host: str, port: int):
-    """Start Flask app using Werkzeug make_server in background thread."""
     global HTTP_SERVER, HTTP_THREAD
     try:
         if HTTP_SERVER is not None:
@@ -193,7 +196,7 @@ def start_embedded(host: str, port: int):
         import threading
         HTTP_THREAD = threading.Thread(target=HTTP_SERVER.serve_forever, daemon=True)
         HTTP_THREAD.start()
-        _ui_log(f"🟢 Flask started (embedded) on {host}:{port}")
+        _ui_log(f"Flask started (embedded) on {host}:{port}")
         return True
     except Exception as e:
         HTTP_SERVER = None
@@ -202,7 +205,6 @@ def start_embedded(host: str, port: int):
         return False
 
 def stop_embedded(timeout: float = 2.0):
-    """Stop embedded Werkzeug server without exiting the process."""
     global HTTP_SERVER, HTTP_THREAD
     try:
         srv, th = HTTP_SERVER, HTTP_THREAD
@@ -218,23 +220,19 @@ def stop_embedded(timeout: float = 2.0):
                 th.join(timeout)
             except Exception:
                 pass
-        _ui_log("🔴 Flask stopped (embedded)")
+        _ui_log("Flask stopped (embedded)")
         return True
     except Exception as e:
         _ui_log(f"Failed to stop embedded server: {e}", level="error")
         return False
 
-# Override để bỏ qua kiểm tra Content-Type
 @app.before_request
 def before_request():
-    """Override để xử lý request không có Content-Type"""
-    # Log request cơ bản và đánh dấu thời điểm bắt đầu
     try:
         g._req_start_time = time.time()
-        # --- Xử lý query params ---
         params_keys = ''
         try:
-            args_dict = request.args.to_dict(flat=True)  # convert ImmutableMultiDict -> dict
+            args_dict = request.args.to_dict(flat=True)
             params_keys = '{' + ', '.join(args_dict.keys()) + '}' if args_dict else '{}'
         except Exception:
             params_keys = '{}'
@@ -243,12 +241,10 @@ def before_request():
             raw_body = request.get_data(as_text=True)
             body_keys = ""
             try:
-                # Chỉ lấy key nếu là JSON
                 data = json.loads(raw_body)
                 if isinstance(data, dict):
                     body_keys = '{' + ', '.join(data.keys()) + '}'
                 elif isinstance(data, list):
-                    # Nếu gửi list of dict, lấy key của object đầu tiên
                     body_keys = '{' + ', '.join(data[0].keys()) + '}' if data else ''
                 else:
                     body_keys = ''
@@ -257,11 +253,10 @@ def before_request():
         except Exception:
             body_keys = ""
         
-        _ui_log(f"➡️ {request.method} {request.path} | ip={request.remote_addr} | params={params_keys} | body={body_keys}", level="info")
+        _ui_log(f"{request.method} {request.path} | ip={request.remote_addr} | params={params_keys} | body={body_keys}", level="info")
     except Exception:
         pass
 
-    # Sync SERVER_MODE from GUI/terminal UI state (ui_settings.json driven)
     try:
         ui = getattr(ui_manager, 'current_ui', None)
         if ui is not None and hasattr(ui, 'mode'):
@@ -272,14 +267,11 @@ def before_request():
         pass
 
     if request.method == 'POST' and request.path.startswith('/api/'):
-        # Nếu là POST request đến Ollama API và không có Content-Type
         if not request.content_type or 'application/json' not in request.content_type:
-            # Set Content-Type để Flask không báo lỗi
             request.environ['CONTENT_TYPE'] = 'application/json'
 
 @app.after_request
 def after_request(response):
-    """Log status và thời gian xử lý cho mọi request"""
     try:
         start = getattr(g, '_req_start_time', None)
         elapsed_ms = int((time.time() - start) * 1000) if start else -1
@@ -289,7 +281,6 @@ def after_request(response):
 
 @app.route('/', methods=['GET'])
 def root():
-    """Root endpoint"""
     route_info = "GET / - Root"
     ui_manager.update_route(route_info)
     if SERVER_MODE == "ollama":
@@ -299,7 +290,6 @@ def root():
 
 @app.route('/', methods=['OPTIONS'])
 def root_options():
-    """OPTIONS for root endpoint"""
     route_info = "OPTIONS / - Root"
     ui_manager.update_route(route_info)
     
@@ -311,12 +301,10 @@ def root_options():
 
 @app.route('/__shutdown', methods=['POST'])
 def shutdown():
-    """Shutdown server with robust fallback (works even without werkzeug handle)."""
     try:
         route_info = "POST /__shutdown - Shutdown"
         ui_manager.update_route(route_info)
 
-        # Try werkzeug shutdown first
         func = request.environ.get('werkzeug.server.shutdown')
         if func is not None:
             try:
@@ -325,7 +313,6 @@ def shutdown():
             except Exception as e:
                 logger.warning(f"Werkzeug shutdown failed: {e}")
 
-        # Fallback: hard-exit the process shortly after responding
         try:
             import threading, os, time as _time
             def _delayed_exit():
@@ -344,7 +331,6 @@ def shutdown():
         return jsonify({"error": str(e)}), 500
 
 def parse_tools_to_text(tools):
-    """Parse tools thành text format"""
     tools_text = ""
     for i, tool in enumerate(tools):
         if tool.get('type') == 'function':
@@ -376,7 +362,6 @@ def parse_tools_to_text(tools):
                         tools_text += f": {prop_desc}"
                     tools_text += "\n"
                     
-                    # Handle enum values
                     if 'enum' in prop_info:
                         enum_values = prop_info['enum']
                         tools_text += f"    Values: {', '.join(enum_values)}\n"
@@ -386,10 +371,8 @@ def parse_tools_to_text(tools):
     return tools_text
 
 def _make_display_data_short(data, max_len: int = 200):
-    """Tạo bản sao rút gọn data chỉ để hiển thị trong UI, không ảnh hưởng dữ liệu gốc."""
     try:
         display_data = copy.deepcopy(data) if data else {}
-        # Truncate long messages for display
         if 'messages' in display_data and isinstance(display_data['messages'], list):
             for msg in display_data['messages']:
                 if isinstance(msg, dict) and 'content' in msg:
@@ -398,21 +381,17 @@ def _make_display_data_short(data, max_len: int = 200):
                         msg['content'] = content[:max_len] + "..."
         return display_data
     except Exception:
-        # Nếu có lỗi, trả về data gốc để tránh chặn log
         return data
 
 def parse_json_request():
-    """Decorator để parse JSON request không cần Content-Type"""
     def decorator(f):
         import functools
         @functools.wraps(f)
         def wrapper(*args, **kwargs):
             try:
                 if request.content_type and 'application/json' in request.content_type:
-                    # Nếu có Content-Type application/json, dùng get_json()
                     request.json_data = request.get_json()
                 else:
-                    # Nếu không có Content-Type, parse từ raw data
                     raw_data = request.get_data(as_text=True)
                     if raw_data:
                         request.json_data = json.loads(raw_data)
@@ -424,42 +403,98 @@ def parse_json_request():
         return wrapper
     return decorator
 
+def load_cookies_from_file():
+    try:
+        if os.path.exists('cookies.txt'):
+            with open('cookies.txt', 'r', encoding='utf-8') as f:
+                cookie_content = f.read().strip()
+                if cookie_content:
+                    return cookie_content
+        return None
+    except Exception:
+        return None
+
+def select_chat_id():
+    chat_ids = load_chat_ids()
+    chat_history = load_chat_history()
+    
+    if not chat_ids:
+        new_chat_id = str(uuid.uuid4())
+        chat_ids['current'] = new_chat_id
+        chat_history[new_chat_id] = []
+        save_chat_ids(chat_ids)
+        save_chat_history(chat_history)
+        return new_chat_id
+    
+    print("\n" + "="*50)
+    print("chat id có sẵn:")
+    for i, (chat_id, info) in enumerate(chat_ids.items(), 1):
+        if chat_id != 'current':
+            message_count = len(chat_history.get(chat_id, []))
+            print(f"{i}. {chat_id[:8]}... ({message_count} tin nhắn)")
+    print("q. tạo chat id mới")
+    print("="*50)
+    
+    while True:
+        try:
+            choice = input("chọn: ").strip()
+            if choice.lower() == 'q':
+                new_chat_id = str(uuid.uuid4())
+                chat_ids['current'] = new_chat_id
+                chat_history[new_chat_id] = []
+                save_chat_ids(chat_ids)
+                save_chat_history(chat_history)
+                print(f"đã tạo chat id mới: {new_chat_id}")
+                return new_chat_id
+            else:
+                try:
+                    choice_num = int(choice)
+                    if 1 <= choice_num <= len([k for k in chat_ids.keys() if k != 'current']):
+                        chat_id_list = [k for k in chat_ids.keys() if k != 'current']
+                        selected_chat_id = chat_id_list[choice_num - 1]
+                        chat_ids['current'] = selected_chat_id
+                        save_chat_ids(chat_ids)
+                        print(f"đã chọn chat id: {selected_chat_id}")
+                        return selected_chat_id
+                    else:
+                        print("vui lòng chọn số hợp lệ")
+                except ValueError:
+                    print("vui lòng nhập số hoặc q")
+        except KeyboardInterrupt:
+            print("\nthoát")
+            sys.exit(0)
+
 def ask_server_mode():
-    """Hỏi người dùng chọn mode server hoặc sử dụng argument"""
     global SERVER_MODE
     
-    # Nếu có argument --mode, sử dụng luôn
     if args.mode:
         SERVER_MODE = args.mode
         app.config['SERVER_MODE'] = SERVER_MODE
         if SERVER_MODE == "lmstudio":
             if not BACKGROUND_MODE:
-                print("Đã chọn LM Studio - port 1235")
+                print("đã chọn LM Studio - port 1235")
             return 1235
         else:
             if not BACKGROUND_MODE:
-                print("Đã chọn Ollama - port 11434")
+                print("đã chọn Ollama - port 11434")
             return 11434
     
-    # Nếu có argument --port, xác định mode dựa trên port
     if args.port:
         if args.port == 1235:
             SERVER_MODE = "lmstudio"
             app.config['SERVER_MODE'] = SERVER_MODE
             if not BACKGROUND_MODE:
-                print("✅ Đã chọn LM Studio Mode - Port 1235")
+                print("đã chọn LM Studio - port 1235")
             return 1235
         elif args.port == 11434:
             SERVER_MODE = "ollama"
             app.config['SERVER_MODE'] = SERVER_MODE
             if not BACKGROUND_MODE:
-                print("✅ Đã chọn Ollama Mode - Port 11434")
+                print("đã chọn Ollama - port 11434")
             return 11434
         else:
-            # Port tùy chỉnh, hỏi mode
             pass
     
-    # Trong background mode, default to lmstudio nếu không có argument
     if BACKGROUND_MODE:
         SERVER_MODE = "lmstudio"
         app.config['SERVER_MODE'] = SERVER_MODE
@@ -476,12 +511,12 @@ def ask_server_mode():
             if choice == "1":
                 SERVER_MODE = "ollama"
                 app.config['SERVER_MODE'] = SERVER_MODE
-                print("Đã chọn Ollama - port 11434")
+                print("đã chọn Ollama - port 11434")
                 return 11434
             elif choice == "2":
                 SERVER_MODE = "lmstudio"
                 app.config['SERVER_MODE'] = SERVER_MODE
-                print("Đã chọn LM Studio - port 1235")
+                print("đã chọn LM Studio - port 1235")
                 return 1235
             else:
                 print("vui lòng chọn 1 hoặc 2")
@@ -489,13 +524,8 @@ def ask_server_mode():
             print("\nthoát")
             sys.exit(0)
 
-#! routes moved to controllers blueprints
-
-
-
 @app.errorhandler(500)
 def internal_error(error):
-    """Handle internal server errors and release lock"""
     route_info = "ERROR 500 - Internal Server Error"
     logger.error(f"ROUTE: {route_info}")
     ui_manager.update_route(route_info)
@@ -509,18 +539,30 @@ def internal_error(error):
         }
     }), 500
 
-
 if __name__ == '__main__':
     args = parse_arguments()
     if args.background:
         BACKGROUND_MODE = True
+    
+    cookies = load_cookies_from_file()
+    if cookies:
+        print("đã tải cookies từ cookies.txt")
+        os.environ['QWEN_COOKIES'] = cookies
+    
+    chat_id = select_chat_id()
+    print(f"chat id hiện tại: {chat_id}")
+    
     port = ask_server_mode()
     host = args.host or '0.0.0.0'
     app.config['SERVER_MODE'] = SERVER_MODE
+    app.config['CURRENT_CHAT_ID'] = chat_id
+    
     if not BACKGROUND_MODE:
         print("server đang chạy")
         print(f"mode: {SERVER_MODE}")
         print(f"host: {host}")
         print(f"port: {port}")
+        print(f"chat id: {chat_id}")
         print("truy cập: http://0.0.0.0:" + str(port))
+    
     app.run(host=host, port=port, threaded=True)

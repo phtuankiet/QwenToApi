@@ -1,5 +1,5 @@
 import json
-
+import os
 
 def parse_cookie_items(cookie_list):
     cookie_pairs = []
@@ -17,7 +17,6 @@ def parse_cookie_items(cookie_list):
     cookie_header = "; ".join(cookie_pairs) if cookie_pairs else None
     return cookie_header, bearer_token
 
-
 def coerce_cookie_list(cookie_raw):
     if cookie_raw is None:
         return None
@@ -31,19 +30,23 @@ def coerce_cookie_list(cookie_raw):
         return cookie_raw
     return None
 
+def load_cookies_from_env():
+    cookies_env = os.environ.get('QWEN_COOKIES')
+    if cookies_env:
+        try:
+            return json.loads(cookies_env)
+        except Exception:
+            return None
+    return None
 
 def build_header(base_headers: dict, cookie_raw: str | None = None):
-    """Build Qwen headers dynamically from cookie JSON array string.
-
-    - base_headers: headers template without Cookie/authorization
-    - cookie_raw: JSON array string saved from UI (optional). If None, will load from ui_settings.json
-    Returns a new headers dict (base + Cookie + authorization if found).
-    """
     headers = dict(base_headers or {})
-    # Auto-load cookie from ui_settings.json if not provided
+    
+    if cookie_raw is None:
+        cookie_raw = load_cookies_from_env()
+    
     if cookie_raw is None:
         try:
-            import os
             if os.path.exists("ui_settings.json"):
                 with open("ui_settings.json", "r", encoding="utf-8") as f:
                     cookie_raw = (json.load(f) or {}).get("cookie")
