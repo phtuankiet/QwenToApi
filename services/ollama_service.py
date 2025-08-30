@@ -29,26 +29,22 @@ class OllamaService:
             stream_start_ns = time.perf_counter_ns()
             first_token_ns = None
             output_token_count = 0
-            input_token_count = 0
-            # Ước lượng token đầu vào dựa trên số từ trong messages
             try:
-                msgs = data.get('messages') or []
-                if isinstance(msgs, list):
-                    for m in msgs:
-                        if isinstance(m, dict):
-                            txt = m.get('content') or ""
-                            if isinstance(txt, str):
-                                input_token_count += max(1, len(txt.strip().split()))
+                input_token_count = 0
+                for msg in data.get('messages', []):
+                    txt = msg.get('content', '')
+                    if isinstance(txt, str):
+                        input_token_count += max(1, len(txt.strip().split()))
             except Exception:
                 pass
-            # Tạo chat mới
-            chat_id = qwen_service.create_new_chat(model)
+            
+            from flask import current_app
+            chat_id = current_app.config.get('CURRENT_CHAT_ID')
             if not chat_id:
-                logger.error("Failed to create chat for Ollama request")
-                yield json.dumps({"error": "Failed to create chat"}) + "\n"
+                logger.error("No chat ID found in app config")
+                yield json.dumps({"error": "No chat ID available"}) + "\n"
                 return
             
-            # Chuẩn bị request data
             qwen_data = qwen_service.prepare_qwen_request(data, chat_id, model)
             
             # Gọi Qwen API với streaming
@@ -80,17 +76,15 @@ class OllamaService:
                                 return
                             
                             if error_code == "Bad_Request" and "parent_id" in error_details and "not exist" in error_details:
-                                # Xử lý lỗi parent_id không tồn tại
                                 logger.warning(f"Parent ID not exist error detected: {error_details}")
                                 
-                                # Tạo chat mới và reset parent_id
-                                new_chat_id = qwen_service.create_new_chat(model)
-                                if new_chat_id:
-                                    # Gửi lại request với parent_id = None
-                                    qwen_data = qwen_service.prepare_qwen_request(data, new_chat_id, model)
+                                from flask import current_app
+                                current_chat_id = current_app.config.get('CURRENT_CHAT_ID')
+                                if current_chat_id:
+                                    qwen_data = qwen_service.prepare_qwen_request(data, current_chat_id, model)
                                     
                                     retry_response = requests.post(
-                                        f"{QWEN_CHAT_COMPLETIONS_URL}?chat_id={new_chat_id}",
+                                        f"{QWEN_CHAT_COMPLETIONS_URL}?chat_id={current_chat_id}",
                                         headers=headers,
                                         json=qwen_data,
                                         stream=True,
@@ -98,7 +92,6 @@ class OllamaService:
                                     )
                                     
                                     if retry_response.status_code == 200:
-                                        # Tiếp tục xử lý response từ retry
                                         response = retry_response
                                     else:
                                         logger.error(f"Retry failed with status: {retry_response.status_code}")
@@ -111,12 +104,12 @@ class OllamaService:
                                                 "content": ""
                                             },
                                             "done": True,
-                                            "error": f"Failed to retry with new chat: {retry_response.status_code}"
+                                            "error": f"Failed to retry with current chat: {retry_response.status_code}"
                                         }
                                         yield json.dumps(error_chunk) + "\n"
                                         return
                                 else:
-                                    logger.error("Failed to create new chat for retry")
+                                    logger.error("No current chat ID available for retry")
                                     error_created_at = datetime.now().isoformat() + "Z"
                                     error_chunk = {
                                         "model": model,
@@ -126,7 +119,7 @@ class OllamaService:
                                             "content": ""
                                         },
                                         "done": True,
-                                        "error": "Failed to create new chat for retry"
+                                        "error": "No current chat ID available for retry"
                                     }
                                     yield json.dumps(error_chunk) + "\n"
                                     return
@@ -381,12 +374,12 @@ class OllamaService:
             request_id = str(uuid.uuid4())
             request_state = RequestState(request_id, model)
                         
-            # Tạo chat mới
-            chat_id = qwen_service.create_new_chat(model)
+            from flask import current_app
+            chat_id = current_app.config.get('CURRENT_CHAT_ID')
             if not chat_id:
-                logger.error("Failed to create chat for Ollama request")
-                return {'content': 'Error: Failed to create chat'}            
-            # Chuẩn bị request data
+                logger.error("No chat ID found in app config")
+                return {'content': 'Error: No chat ID available'}
+            
             qwen_data = qwen_service.prepare_qwen_request(data, chat_id, model)
             
             # Force streaming để capture content
@@ -419,17 +412,15 @@ class OllamaService:
                                 return {"error": f"model '{data.get('model', model)}' not found"}
                             
                             if error_code == "Bad_Request" and "parent_id" in error_details and "not exist" in error_details:
-                                # Xử lý lỗi parent_id không tồn tại
                                 logger.warning(f"Parent ID not exist error detected: {error_details}")
                                 
-                                # Tạo chat mới và reset parent_id
-                                new_chat_id = qwen_service.create_new_chat(model)
-                                if new_chat_id:
-                                    # Gửi lại request với parent_id = None
-                                    qwen_data = qwen_service.prepare_qwen_request(data, new_chat_id, model)
+                                from flask import current_app
+                                current_chat_id = current_app.config.get('CURRENT_CHAT_ID')
+                                if current_chat_id:
+                                    qwen_data = qwen_service.prepare_qwen_request(data, current_chat_id, model)
                                     
                                     retry_response = requests.post(
-                                        f"{QWEN_CHAT_COMPLETIONS_URL}?chat_id={new_chat_id}",
+                                        f"{QWEN_CHAT_COMPLETIONS_URL}?chat_id={current_chat_id}",
                                         headers=headers,
                                         json=qwen_data,
                                         stream=True,
@@ -437,14 +428,13 @@ class OllamaService:
                                     )
                                     
                                     if retry_response.status_code == 200:
-                                        # Tiếp tục xử lý response từ retry
                                         response = retry_response
                                     else:
                                         logger.error(f"Retry failed with status: {retry_response.status_code}")
-                                        return {'content': f'Error: Failed to retry with new chat: {retry_response.status_code}'}
+                                        return {'content': f'Error: Failed to retry with current chat: {retry_response.status_code}'}
                                 else:
-                                    logger.error("Failed to create new chat for retry")
-                                    return {'content': 'Error: Failed to create new chat for retry'}
+                                    logger.error("No current chat ID available for retry")
+                                    return {'content': 'Error: No current chat ID available for retry'}
                     except json.JSONDecodeError as e:
                         logger.error(f"Error parsing JSON response: {e}")
             except Exception as e:
