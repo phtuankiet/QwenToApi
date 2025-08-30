@@ -30,30 +30,22 @@ class ChatService:
         """
         model = data.get('model', 'qwen3-235b-a22b')
         
-        # Tạo request state nếu chưa có
         if request_state is None:
             request_id = str(uuid.uuid4())
             request_state = RequestState(request_id, model)
                 
         try:
-            # Sử dụng chat_id hiện tại hoặc tạo mới nếu chưa có
-            chat_id = chat_manager.get_current_chat_id()
+            from flask import current_app
+            chat_id = current_app.config.get('CURRENT_CHAT_ID')
             if not chat_id:
-                chat_id = chat_manager.initialize_chat(model)
-                if not chat_id:
-                    logger.error("Failed to create new chat")
-                    yield f"data: {json.dumps({'error': 'Failed to create new chat'})}\n\n"
-                    return
+                logger.error("No chat ID found in app config")
+                yield f"data: {json.dumps({'error': 'No chat ID available'})}\n\n"
+                return
             
-            # Lấy parent_id hiện tại
             parent_id = chat_manager.get_current_parent_id()
             
-            # Chuẩn bị request cho Qwen API
             qwen_data = qwen_service.prepare_qwen_request(data, chat_id, model, parent_id)
             
-            
-            # Gửi request đến Qwen API
-            # Build headers with cookie from settings
             headers = build_header(QWEN_HEADERS)
 
             response = requests.post(
@@ -61,7 +53,7 @@ class ChatService:
                 headers=headers,
                 json=qwen_data,
                 stream=True,
-                timeout=300  # 5 phút timeout
+                timeout=300
             )
                         
             # Kiểm tra response content trước khi xử lý
@@ -81,37 +73,33 @@ class ChatService:
                             if error_code == "Bad_Request" and "chat is in progress" in error_details:
                                 error_msg = "Chat is currently in progress. Please wait for the current request to complete."
                             elif error_code == "Bad_Request" and "parent_id" in error_details and "not exist" in error_details:
-                                # Xử lý lỗi parent_id không tồn tại
                                 logger.warning(f"Parent ID not exist error detected: {error_details}")
                                 
-                                # Tạo chat mới và reset parent_id
-                                new_chat_id = chat_manager.create_new_chat(model)
-                                if new_chat_id:
-                                    # Gửi lại request với parent_id = None
-                                    qwen_data = qwen_service.prepare_qwen_request(data, new_chat_id, model, None)
+                                from flask import current_app
+                                current_chat_id = current_app.config.get('CURRENT_CHAT_ID')
+                                if current_chat_id:
+                                    qwen_data = qwen_service.prepare_qwen_request(data, current_chat_id, model, None)
                                     
                                     retry_response = requests.post(
-                                        f"{QWEN_CHAT_COMPLETIONS_URL}?chat_id={new_chat_id}",
-                                        headers=QWEN_HEADERS,
+                                        f"{QWEN_CHAT_COMPLETIONS_URL}?chat_id={current_chat_id}",
+                                        headers=headers,
                                         json=qwen_data,
                                         stream=True,
                                         timeout=300
                                     )
                                     
                                     if retry_response.status_code == 200:
-                                        # Tiếp tục xử lý response từ retry
                                         response = retry_response
-                                        # Tiếp tục xử lý response bình thường
                                         yield from self._process_qwen_stream_response(response, model, request_state)
                                         return
                                     else:
                                         logger.error(f"Retry failed with status: {retry_response.status_code}")
-                                        error_msg = f"Failed to retry with new chat: {retry_response.status_code}"
+                                        error_msg = f"Failed to retry with current chat: {retry_response.status_code}"
                                         yield f"data: {json.dumps({'error': error_msg})}\n\n"
                                         return
                                 else:
-                                    logger.error("Failed to create new chat for retry")
-                                    error_msg = "Failed to create new chat for retry"
+                                    logger.error("No current chat ID available for retry")
+                                    error_msg = "No current chat ID available for retry"
                                     yield f"data: {json.dumps({'error': error_msg})}\n\n"
                                     return
                             else:

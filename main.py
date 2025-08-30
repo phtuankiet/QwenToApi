@@ -419,19 +419,75 @@ def select_chat_id():
     chat_history = load_chat_history()
     
     if not chat_ids:
-        new_chat_id = str(uuid.uuid4())
-        chat_ids['current'] = new_chat_id
-        chat_history[new_chat_id] = []
-        save_chat_ids(chat_ids)
-        save_chat_history(chat_history)
-        return new_chat_id
+        try:
+            from services.qwen_service import qwen_service
+            new_chat_id = qwen_service.create_new_chat()
+            if new_chat_id:
+                chat_ids['current'] = new_chat_id
+                chat_history[new_chat_id] = []
+                save_chat_ids(chat_ids)
+                save_chat_history(chat_history)
+                print(f"đã tạo chat mới từ Qwen server: {new_chat_id}")
+                return new_chat_id
+            else:
+                print("không thể tạo chat từ Qwen server, tạo chat ID local...")
+                new_chat_id = str(uuid.uuid4())
+                chat_ids['current'] = new_chat_id
+                chat_history[new_chat_id] = []
+                save_chat_ids(chat_ids)
+                save_chat_history(chat_history)
+                return new_chat_id
+        except Exception as e:
+            print(f"lỗi khi tạo chat từ Qwen: {e}, tạo chat ID local...")
+            new_chat_id = str(uuid.uuid4())
+            chat_ids['current'] = new_chat_id
+            chat_history[new_chat_id] = []
+            save_chat_ids(chat_ids)
+            save_chat_history(chat_history)
+            return new_chat_id
+    
+    existing_chat_ids = [k for k in chat_ids.keys() if k != 'current']
+    current_chat_id = chat_ids.get('current')
+    
+    all_chat_ids = list(chat_history.keys())
+    if current_chat_id and current_chat_id not in all_chat_ids:
+        all_chat_ids.append(current_chat_id)
+    
+    if not all_chat_ids:
+        print("không có chat ID nào, tạo mới...")
+        try:
+            from services.qwen_service import qwen_service
+            new_chat_id = qwen_service.create_new_chat()
+            if new_chat_id:
+                chat_ids['current'] = new_chat_id
+                chat_history[new_chat_id] = []
+                save_chat_ids(chat_ids)
+                save_chat_history(chat_history)
+                print(f"đã tạo chat mới từ Qwen server: {new_chat_id}")
+                return new_chat_id
+            else:
+                print("không thể tạo chat từ Qwen server, tạo chat ID local...")
+                new_chat_id = str(uuid.uuid4())
+                chat_ids['current'] = new_chat_id
+                chat_history[new_chat_id] = []
+                save_chat_ids(chat_ids)
+                save_chat_history(chat_history)
+                return new_chat_id
+        except Exception as e:
+            print(f"lỗi khi tạo chat từ Qwen: {e}, tạo chat ID local...")
+            new_chat_id = str(uuid.uuid4())
+            chat_ids['current'] = new_chat_id
+            chat_history[new_chat_id] = []
+            save_chat_ids(chat_ids)
+            save_chat_history(chat_history)
+            return new_chat_id
     
     print("\n" + "="*50)
     print("chat id có sẵn:")
-    for i, (chat_id, info) in enumerate(chat_ids.items(), 1):
-        if chat_id != 'current':
-            message_count = len(chat_history.get(chat_id, []))
-            print(f"{i}. {chat_id[:8]}... ({message_count} tin nhắn)")
+    for i, chat_id in enumerate(all_chat_ids, 1):
+        message_count = len(chat_history.get(chat_id, []))
+        current_marker = " (hiện tại)" if chat_id == current_chat_id else ""
+        print(f"{i}. {chat_id[:8]}... ({message_count} tin nhắn){current_marker}")
     print("q. tạo chat id mới")
     print("="*50)
     
@@ -439,30 +495,51 @@ def select_chat_id():
         try:
             choice = input("chọn: ").strip()
             if choice.lower() == 'q':
-                new_chat_id = str(uuid.uuid4())
-                chat_ids['current'] = new_chat_id
-                chat_history[new_chat_id] = []
-                save_chat_ids(chat_ids)
-                save_chat_history(chat_history)
-                print(f"đã tạo chat id mới: {new_chat_id}")
-                return new_chat_id
+                try:
+                    from services.qwen_service import qwen_service
+                    new_chat_id = qwen_service.create_new_chat()
+                    if new_chat_id:
+                        chat_ids['current'] = new_chat_id
+                        chat_history[new_chat_id] = []
+                        save_chat_ids(chat_ids)
+                        save_chat_history(chat_history)
+                        print(f"đã tạo chat mới từ Qwen server: {new_chat_id}")
+                        return new_chat_id
+                    else:
+                        print("không thể tạo chat từ Qwen server, tạo chat ID local...")
+                        new_chat_id = str(uuid.uuid4())
+                        chat_ids['current'] = new_chat_id
+                        chat_history[new_chat_id] = []
+                        save_chat_ids(chat_ids)
+                        save_chat_history(chat_history)
+                        return new_chat_id
+                except Exception as e:
+                    print(f"lỗi khi tạo chat từ Qwen: {e}, tạo chat ID local...")
+                    new_chat_id = str(uuid.uuid4())
+                    chat_ids['current'] = new_chat_id
+                    chat_history[new_chat_id] = []
+                    save_chat_ids(chat_ids)
+                    save_chat_history(chat_history)
+                    return new_chat_id
             else:
                 try:
                     choice_num = int(choice)
-                    if 1 <= choice_num <= len([k for k in chat_ids.keys() if k != 'current']):
-                        chat_id_list = [k for k in chat_ids.keys() if k != 'current']
-                        selected_chat_id = chat_id_list[choice_num - 1]
+                    if 1 <= choice_num <= len(all_chat_ids):
+                        selected_chat_id = all_chat_ids[choice_num - 1]
                         chat_ids['current'] = selected_chat_id
                         save_chat_ids(chat_ids)
                         print(f"đã chọn chat id: {selected_chat_id}")
                         return selected_chat_id
                     else:
-                        print("vui lòng chọn số hợp lệ")
+                        print(f"vui lòng chọn số từ 1 đến {len(all_chat_ids)}")
                 except ValueError:
                     print("vui lòng nhập số hoặc q")
         except KeyboardInterrupt:
             print("\nthoát")
             sys.exit(0)
+        except EOFError:
+            print("\nlỗi input, thoát")
+            sys.exit(1)
 
 def ask_server_mode():
     global SERVER_MODE
