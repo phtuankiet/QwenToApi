@@ -588,6 +588,14 @@ espFrame.Position = UDim2.new(0, 0, 0, 0)
 espFrame.BackgroundTransparency = 1
 espFrame.ZIndex = 1
 
+local fovFrame = Instance.new("Frame")
+fovFrame.Name = "FOVFrame"
+fovFrame.Parent = screenGui
+fovFrame.Size = UDim2.new(1, 0, 1, 0)
+fovFrame.Position = UDim2.new(0, 0, 0, 0)
+fovFrame.BackgroundTransparency = 1
+fovFrame.ZIndex = 8
+
 local autoAttackGUI = Instance.new("Frame")
 autoAttackGUI.Name = "AutoAttackGUI"
 autoAttackGUI.Parent = screenGui
@@ -1269,6 +1277,31 @@ local function createESP(character)
     espElements[character] = espContainer
 end
 
+local function createFOVCircle()
+    if fovCircle then
+        fovCircle:Destroy()
+    end
+    
+    fovCircle = Instance.new("Frame")
+    fovCircle.Name = "FOVCircle"
+    fovCircle.Parent = fovFrame
+    fovCircle.Size = UDim2.new(0, fovSize * 2, 0, fovSize * 2)
+    fovCircle.Position = UDim2.new(0.5, -fovSize, 0.5, -fovSize)
+    fovCircle.BackgroundTransparency = 1
+    fovCircle.BorderSizePixel = 0
+    fovCircle.ZIndex = 9
+    fovCircle.Visible = false
+    
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Color3.fromRGB(0, 255, 0)
+    stroke.Thickness = 2
+    stroke.Parent = fovCircle
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(1, 0)
+    corner.Parent = fovCircle
+end
+
 local function updateESP()
     if not espEnabled then return end
     
@@ -1368,6 +1401,13 @@ local function startAutoJump()
             wait(0.1)
         end
     end)
+end
+
+local function stopAutoJump()
+    if autoJumpConnection then
+        autoJumpConnection:Disconnect()
+        autoJumpConnection = nil
+    end
 end
 
 local function toggleAutoJump()
@@ -2454,16 +2494,20 @@ local function isTargetInFOV()
         return false
     end
     
-    local targetPos = selectedTarget.Character.Head.Position
-    local screenPos, onScreen = camera:WorldToScreenPoint(targetPos)
+    local success, result = pcall(function()
+        local targetPos = selectedTarget.Character.Head.Position
+        local screenPos, onScreen = camera:WorldToScreenPoint(targetPos)
+        
+        if not onScreen then return false end
+        
+        local centerX = camera.ViewportSize.X / 2
+        local centerY = camera.ViewportSize.Y / 2
+        local distance = math.sqrt((screenPos.X - centerX)^2 + (screenPos.Y - centerY)^2)
+        
+        return distance <= fovSize
+    end)
     
-    if not onScreen then return false end
-    
-    local centerX = camera.ViewportSize.X / 2
-    local centerY = camera.ViewportSize.Y / 2
-    local distance = math.sqrt((screenPos.X - centerX)^2 + (screenPos.Y - centerY)^2)
-    
-    return distance <= fovSize
+    return success and result
 end
 
 local function aimAtTarget()
@@ -2475,12 +2519,15 @@ local function aimAtTarget()
         return
     end
     
-    if isTargetInFOV() then
-        local targetPosition = selectedTarget.Character.Head.Position
-        local lookDirection = (targetPosition - player.Character.HumanoidRootPart.Position).Unit
-        local newCFrame = CFrame.new(player.Character.HumanoidRootPart.Position, targetPosition)
-        camera.CFrame = newCFrame
+    if not isTargetInFOV() then
+        return
     end
+    
+    pcall(function()
+        local targetPosition = selectedTarget.Character.Head.Position
+        local currentCamera = workspace.CurrentCamera
+        currentCamera.CFrame = CFrame.lookAt(currentCamera.CFrame.Position, targetPosition)
+    end)
 end
 
 local function startAimbot()
@@ -2731,6 +2778,7 @@ end)
 
 makeFOVSliderDraggable()
 updatePlayersList()
+createFOVCircle()
 
 chatDelayBox.FocusLost:Connect(function()
     local value = tonumber(chatDelayBox.Text)
